@@ -1,0 +1,56 @@
+### Keep only source, build configuration and required test seeds ###
+/*
+!/src/
+!/.gitignore
+!/.gitattributes
+!/pom.xml
+!/mvnw
+!/mvnw.cmd
+
+!/.mvn/
+/.mvn/*
+!/.mvn/wrapper/
+/.mvn/wrapper/*
+!/.mvn/wrapper/maven-wrapper.properties
+
+!/scripts/
+/scripts/*
+!/scripts/main_script.txt
+!/scripts/novos_candidatos_51_75.txt
+
+### Local configuration and keys, including inside src/ ###
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+### Generated files and logs ###
+target/
+build/
+dist/
+node_modules/
+*.class
+*.log
+*.tmp
+.DS_Store
+
+### IDE configuration ###
+.idea/
+.vscode/
+*.iws
+*.iml
+*.ipr
+.apt_generated/
+.classpath
+.factorypath
+.project
+.settings/
+.springBeans
+.sts4-cache/
+nbproject/private/
+nbbuild/
+nbdist/
+.nb-gradle/

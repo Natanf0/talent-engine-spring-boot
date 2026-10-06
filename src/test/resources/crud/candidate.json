@@ -1,0 +1,79 @@
+{
+  "name": "Ana Silva",
+  "about": "<p>Desenvolvedora <strong>Java</strong></p>",
+  "phone": "+55 (11) 90000-0000",
+  "linkedinURL": "https://www.linkedin.com/in/exemplo",
+  "resume": {
+    "skills": [
+      {
+        "weight": 3,
+        "skill": {
+          "name": " Java "
+        }
+      }
+    ],
+    "languages": [
+      {
+        "level": 4,
+        "language": {
+          "name": "Inglês"
+        }
+      }
+    ],
+    "experiences": [
+      {
+        "role": "Backend Developer",
+        "companyName": "Empresa Exemplo",
+        "description": "<p>APIs e integração.</p>",
+        "durationMonths": 24,
+        "seniority": "PLENO",
+        "skills": [
+          {
+            "weight": 2,
+            "skill": {
+              "name": "java"
+            }
+          }
+        ]
+      }
+    ],
+    "undergraduate": {
+      "field": "Computação",
+      "institution": "Universidade Exemplo",
+      "undergraduateType": "BACHARELADO",
+      "completionDate": "2030-12-01T00:00:00Z",
+      "projects": [
+        {
+          "title": "Compilador",
+          "startDate": "2025-01-01T00:00:00Z",
+          "endDate": "2026-01-01T00:00:00Z",
+          "skills": [
+            {
+              "weight": 2,
+              "skill": {
+                "name": "C++"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "graduates": [
+      {
+        "degree": "MASTERS",
+        "field": "Computação",
+        "subarea": "Software",
+        "institution": "Universidade Exemplo",
+        "completionDate": "2035-01-01T00:00:00Z",
+        "projects": [
+          {
+            "title": "Pesquisa",
+            "startDate": "2033-01-01T00:00:00Z",
+            "skills": []
+          }
+        ]
+      }
+    ]
+  },
+  "professionalTitle": "Backend Developer"
+}

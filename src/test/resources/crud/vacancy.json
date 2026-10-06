@@ -1,0 +1,11 @@
+{
+  "role": "Java Developer", "city": "Recife", "seniority": "PLENO", "modalidade": "REMOTO",
+  "skillRequirements": [{"weight": 2, "required": true, "skill": {"name": "JAVA"}}],
+  "languageRequirements": [{"level": 3, "required": false, "language": {"name": " inglês "}}],
+  "experienceRequirement": {"required": true, "experience": {
+    "role": "Backend Developer", "durationMonths": 12, "seniority": "PLENO",
+    "skills": [{"weight": 1, "skill": {"name": "Java"}}]
+  }},
+  "undergraduateRequirements": [{"required": false, "undergraduate": {"field": "Computação"}}],
+  "graduateRequirements": [{"required": false, "graduate": {"degree": "MASTERS", "field": "Computação"}}]
+}

@@ -1,0 +1,55 @@
+package br.com.careermatcher.enums;
+
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+
+@AllArgsConstructor
+public enum PesosRanker {
+    // SeniorityRanker
+    SENIORIDADE_CUMPRIDA(4),
+    SENIORIDADE_ABAIXO(-1),
+    SENIORIDADE_ACIMA(1),
+
+    // SkillRanker
+    VAGA_SKILL_ATENDIDA(3),
+    VAGA_SKILL_NAO_ATENDIDA(-2),
+    VAGA_SKILL_OBRIGATORIA(2),
+    VAGA_SKILL_DESEJADA(1),
+
+    // LanguageRanker
+    IDIOMA_CUMPRIDO(3),
+    IDIOMA_NAO_CUMPRIDO(-2),
+    VAGA_LINGUA_ATENDIDA(3),
+    VAGA_LINGUA_NAO_ATENDIDA(-2),
+    VAGA_LINGUA_OBRIGATORIA(2),
+    VAGA_LINGUA_DESEJADA(1),
+
+    // ExperienceRanker
+    VAGA_EXPERIENCIA_OBRIGATORIA(2),
+    VAGA_EXPERIENCIA_DESEJADA(1),
+
+    // UndergraduateRanker
+    GRADUACAO_CURSO_CUMPRIDO(4),
+    GRADUACAO_INSTITUICAO_CUMPRIDO(2),
+    GRADUACAO_TEMPO_CONCLUIDO_CUMPRIDO(2),
+    GRADUACAO_NAO_CUMPRIDA(-4),
+    VAGA_GRADUACAO_OBRIGATORIA(2),
+    VAGA_GRADUACAO_DESEJADA(1),
+
+    // GraduateRanker
+    POS_GRADUACAO_CAMPO_OU_SUBAREA_CUMPRIDO(4),
+    POS_GRADUACAO_INSTITUICAO_CUMPRIDA(2),
+    POS_GRADUACAO_TEMPO_CONCLUIDO_CUMPRIDO(2),
+    POS_GRADUACAO_NAO_CUMPRIDA(-4),
+    VAGA_POS_GRADUACAO_OBRIGATORIA(2),
+    VAGA_POS_GRADUACAO_DESEJADA(1),
+
+    // ModalityRanker
+    VAGA_MODALIDADE_REMOTO(6),
+
+    ;
+
+
+    @Getter
+    private final int peso;
+}
