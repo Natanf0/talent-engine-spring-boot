@@ -44,7 +44,7 @@ class MatchingSubmissionServiceTest {
     private void authenticate(long companyId) {
         var context = SecurityContextHolder.createEmptyContext();
         context.setAuthentication(new UsernamePasswordAuthenticationToken(
-                new AuthUser("user-" + companyId, "User", "user@example.com", Role.GERENTE, companyId, null, true),
+                new AuthUser("user-" + companyId, "User", "user@example.com", Role.GERENTE, companyId, null, true, null),
                 null, List.of()));
         SecurityContextHolder.setContext(context);
     }

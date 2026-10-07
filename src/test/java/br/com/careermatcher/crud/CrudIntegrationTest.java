@@ -93,7 +93,8 @@ class CrudIntegrationTest {
         mvc.perform(get("/api/careermatcher/vagas/page"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.size").value(10))
                 .andExpect(jsonPath("$.totalElements").value(1))
-                .andExpect(jsonPath("$.content[0].skillRequirements").doesNotExist());
+                .andExpect(jsonPath("$.content[0].skillRequirements").doesNotExist())
+                .andExpect(jsonPath("$.content[0].companyName").value("Test"));
         mvc.perform(get("/api/careermatcher/candidatos"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$..resume").isNotEmpty());
         mvc.perform(get("/api/careermatcher/vagas"))
@@ -178,7 +179,8 @@ class CrudIntegrationTest {
                     .andExpect(jsonPath("$.content[0].city").value("Curitiba"))
                     .andExpect(jsonPath("$.content[0].seniority").value("JUNIOR"))
                     .andExpect(jsonPath("$.content[0].modalidade").value("HIBRIDO"))
-                    .andExpect(jsonPath("$.content[0].skillRequirements").doesNotExist());
+                    .andExpect(jsonPath("$.content[0].skillRequirements").doesNotExist())
+                .andExpect(jsonPath("$.content[0].companyName").value("Test"));
         }
         for (String search : List.of("hidden-marker", "private-skill", "missing", "' OR true //")) {
             mvc.perform(get("/api/careermatcher/vagas/page").param("search", search))

@@ -13,6 +13,10 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.*;
 import static org.assertj.core.api.Assertions.*;
 
@@ -73,6 +77,49 @@ class MatchingExecutionRepositoryTest {
         assertThat(new MatchingExecutionRepository(client).findPage(companyId, 0, 20).totalElements()).isEqualTo(3);
     }
 
+    @Test void storesBrasiliaTimezoneWithoutChangingTheCreationInstant() {
+        var instant = Instant.parse("2026-01-01T00:05:00Z");
+        var saved = repository.create(companyId, metadata("RUN-brasilia", instant));
+
+        var stored = storedCreatedAt("RUN-brasilia");
+        assertThat(stored.getZone()).isEqualTo(ZoneId.of("America/Sao_Paulo"));
+        assertThat(stored.getOffset()).isEqualTo(ZoneOffset.ofHours(-3));
+        assertThat(stored.toLocalDateTime()).isEqualTo(LocalDateTime.of(2025, 12, 31, 21, 5));
+        assertThat(stored.toInstant()).isEqualTo(instant);
+        assertThat(saved.getCreatedAt()).isEqualTo(instant);
+        assertThat(repository.find(companyId, "RUN-brasilia").orElseThrow().getCreatedAt()).isEqualTo(instant);
+    }
+
+    @Test void readsAndOrdersMixedTimezonesWithoutRewritingLegacyRecords() {
+        var instant = Instant.parse("2026-01-01T00:05:00Z");
+        client.query("""
+                MATCH (c:COMPANY) WHERE id(c)=$companyId
+                CREATE (c)-[:RELATED_TO]->(:MATCHING_EXECUTION {
+                    executionId:'RUN-legacy', createdAt:$createdAt,
+                    vacanciesQuantity:23, candidateQuantity:70, bucket:'reports',
+                    objectKey:'legacy.json.gz', compression:'gzip', schemaVersion:1
+                })
+                """).bindAll(Map.of("companyId", companyId, "createdAt", instant.atOffset(ZoneOffset.UTC))).run();
+        var legacyTimestamp = storedCreatedAt("RUN-legacy");
+
+        repository.create(companyId, metadata("RUN-newer", instant.plusSeconds(60)));
+        repository.create(companyId, metadata("RUN-older", instant.minusSeconds(60)));
+
+        var firstPage = repository.findPage(companyId, 0, 2);
+        assertThat(firstPage.totalElements()).isEqualTo(3);
+        assertThat(firstPage.totalPages()).isEqualTo(2);
+        assertThat(firstPage.content()).extracting(MatchingExecution::getExecutionId)
+                .containsExactly("RUN-newer", "RUN-legacy");
+        assertThat(firstPage.content()).extracting(MatchingExecution::getCreatedAt)
+                .containsExactly(instant.plusSeconds(60), instant);
+        var secondPage = repository.findPage(companyId, 1, 2);
+        assertThat(secondPage.content()).extracting(MatchingExecution::getExecutionId).containsExactly("RUN-older");
+        assertThat(secondPage.content().getFirst().getCreatedAt()).isEqualTo(instant.minusSeconds(60));
+        assertThat(repository.find(companyId, "RUN-legacy").orElseThrow().getCreatedAt()).isEqualTo(instant);
+        assertThat(storedCreatedAt("RUN-legacy")).isEqualTo(legacyTimestamp);
+        assertThat(storedCreatedAt("RUN-legacy").getOffset()).isEqualTo(ZoneOffset.UTC);
+    }
+
     @Test void preservesCompanyPropertiesAndExistingRelationships() {
         client.query("MATCH (c:COMPANY) WHERE id(c)=$id CREATE (c)-[:PUBLISHES]->(:VACANCY {role:'Existing'})")
                 .bind(companyId).to("id").run();
@@ -102,6 +149,12 @@ class MatchingExecutionRepositoryTest {
         assertThatThrownBy(() -> repository.create(companyId, metadata("RUN-unique", Instant.EPOCH)))
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
         assertThat(repository.findPage(companyId, 0, 20).totalElements()).isEqualTo(1);
+    }
+
+    private ZonedDateTime storedCreatedAt(String executionId) {
+        return client.query("MATCH (e:MATCHING_EXECUTION {executionId:$executionId}) RETURN e.createdAt AS createdAt")
+                .bind(executionId).to("executionId").fetchAs(ZonedDateTime.class)
+                .mappedBy((types, row) -> row.get("createdAt").asZonedDateTime()).one().orElseThrow();
     }
 
     private long createCompany() {

@@ -20,7 +20,7 @@ public class CorsConfig {
         config.setAllowCredentials(false);
         config.setAllowedOrigins(Arrays.stream(origins.split(",")).map(String::strip).filter(s->!s.isBlank()).toList());
         config.setAllowedHeaders(List.of("Authorization","Content-Type"));
-        config.setAllowedMethods(List.of("GET","POST","PATCH","DELETE","OPTIONS"));
+        config.setAllowedMethods(List.of("GET","POST","PUT","PATCH","DELETE","OPTIONS"));
         config.setExposedHeaders(List.of("Content-Disposition"));
         source.registerCorsConfiguration("/**", config);
         return source;

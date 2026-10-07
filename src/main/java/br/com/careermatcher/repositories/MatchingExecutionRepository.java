@@ -8,12 +8,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
-import java.time.ZoneOffset;
+import java.time.ZoneId;
 import java.util.Map;
 import java.util.Optional;
 
 @Repository
 public class MatchingExecutionRepository {
+    private static final ZoneId EXECUTION_ZONE = ZoneId.of("America/Sao_Paulo");
     private final Neo4jClient client;
     public MatchingExecutionRepository(Neo4jClient client) { this.client = client; }
 
@@ -36,7 +37,7 @@ public class MatchingExecutionRepository {
                 RETURN id(e) AS id, properties(e) AS properties
                 """)
                 .bindAll(Map.of("companyId", companyId, "properties", Map.of(
-                        "executionId", execution.getExecutionId(), "createdAt", execution.getCreatedAt().atOffset(ZoneOffset.UTC),
+                        "executionId", execution.getExecutionId(), "createdAt", execution.getCreatedAt().atZone(EXECUTION_ZONE),
                         "vacanciesQuantity", execution.getVacanciesQuantity(), "candidateQuantity", execution.getCandidateQuantity(),
                         "bucket", execution.getBucket(), "objectKey", execution.getObjectKey(),
                         "compression", execution.getCompression(), "schemaVersion", execution.getSchemaVersion())))

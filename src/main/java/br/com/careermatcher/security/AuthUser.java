@@ -5,4 +5,4 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record AuthUser(String id, String name, String email, Role role,
-                       Long companyId, Long candidateId, boolean cadastroFinalizado) {}
+                       Long companyId, Long candidateId, boolean cadastroFinalizado, String companyName) {}

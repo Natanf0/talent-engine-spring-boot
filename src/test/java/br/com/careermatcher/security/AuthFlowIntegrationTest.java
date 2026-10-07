@@ -32,11 +32,13 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest(properties={"spring.neo4j.uri=bolt://localhost:1","spring.neo4j.authentication.username=",
-        "spring.neo4j.authentication.password=","spring.mail.username=","spring.mail.password=","auth.issuer=talentengine"})
+        "spring.neo4j.authentication.password=","spring.mail.username=","spring.mail.password=","auth.issuer=talentengine",
+        "auth.allowed-origins=http://localhost:4200"})
 @AutoConfigureMockMvc
 @Import(AuthFlowIntegrationTest.LocalDatabase.class)
 @DirtiesContext
 class AuthFlowIntegrationTest {
+    private static final String FRONTEND_ORIGIN="http://localhost:4200";
     private static final Instant NOW=Instant.parse("2026-10-02T12:00:00Z");
     private static final String PASSWORD="Senha-segura-123";
     private static final String HASH=new BCryptPasswordEncoder(12).encode(PASSWORD);
@@ -81,11 +83,23 @@ class AuthFlowIntegrationTest {
         doAnswer(call->{ String body=call.getArgument(2); inviteToken.set(body.substring(body.indexOf("#token=")+7)); return null; })
                 .when(email).sendEmail(anyString(),anyString(),anyString());
     }
+    @Test void companyNamesAreReturnedInLoginAndRestoredSession() throws Exception {
+        for (String emailAddress : List.of("admin-a@example.com", "recruiter@example.com", "manager@example.com", "admin-b@example.com")) {
+            String expected=emailAddress.equals("admin-b@example.com")?"B":"A";
+            var response=body(mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                    .content(mapper.writeValueAsString(Map.of("email",emailAddress,"password",PASSWORD))))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.user.companyName").value(expected)));
+            String token=response.path("accessToken").asText();
+            mvc.perform(get("/api/auth/me").header("Authorization","Bearer "+token))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.companyName").value(expected));
+            assertThat(decoder.decode(token).getClaims()).doesNotContainKey("companyName");
+        }
+    }
     @Test void registersUniqueCandidateWithoutCredentialsOnCandidateAndRestrictsOwnProfile() throws Exception {
         var user=body(mvc.perform(post("/api/auth/register/candidate").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"name\":\"Ana\",\"professionalTitle\":\"Developer\",\"email\":\" ANA@EXAMPLE.COM \",\"password\":\""+PASSWORD+"\"}"))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.role").value("CANDIDATO"))
-                .andExpect(jsonPath("$.companyId").doesNotExist()).andExpect(jsonPath("$.email").value("ana@example.com")));
+                .andExpect(jsonPath("$.companyName").doesNotExist()).andExpect(jsonPath("$.companyId").doesNotExist()).andExpect(jsonPath("$.email").value("ana@example.com")));
         String jwt=login("ana@example.com");
         mvc.perform(get("/api/me/candidate").header("Authorization","Bearer "+jwt)).andExpect(status().isOk()).andExpect(jsonPath("$.professionalTitle").value("Developer"));
         mvc.perform(patch("/api/me/candidate").header("Authorization","Bearer "+jwt).contentType(MediaType.APPLICATION_JSON)
@@ -228,6 +242,41 @@ class AuthFlowIntegrationTest {
         }
     }
 
+    @Test void interestPreflightAllowsConfiguredFrontendWithoutAuthentication() throws Exception {
+        for (String method : List.of("PUT", "DELETE")) {
+            var response=mvc.perform(options("/api/me/companies/"+companyA+"/interest")
+                            .header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN)
+                            .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD,method)
+                            .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS,"Authorization, Content-Type"))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN,FRONTEND_ORIGIN))
+                    .andReturn().getResponse();
+            assertThat(response.getHeader(HttpHeaders.ACCESS_CONTROL_ALLOW_METHODS).split(",\\s*")).contains(method);
+            assertThat(response.getHeader(HttpHeaders.ACCESS_CONTROL_ALLOW_HEADERS))
+                    .containsIgnoringCase("Authorization").containsIgnoringCase("Content-Type");
+        }
+    }
+
+    @Test void interestRejectsUntrustedOriginsAndUnauthorizedActors() throws Exception {
+        registerCandidate("cors@example.com");
+        String jwt=login("cors@example.com"),path="/api/me/companies/"+companyA+"/interest";
+        mvc.perform(options(path).header(HttpHeaders.ORIGIN,"https://untrusted.example")
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD,"PUT")
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS,"Authorization"))
+                .andExpect(status().isForbidden())
+                .andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
+        mvc.perform(put(path).header(HttpHeaders.ORIGIN,"https://untrusted.example")
+                        .header(HttpHeaders.AUTHORIZATION,"Bearer "+jwt))
+                .andExpect(status().isForbidden());
+        mvc.perform(put(path).header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN))
+                .andExpect(status().isUnauthorized());
+        for (String staff : List.of("admin-a@example.com","manager@example.com","recruiter@example.com"))
+            mvc.perform(put(path).header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN)
+                            .header(HttpHeaders.AUTHORIZATION,"Bearer "+login(staff)))
+                    .andExpect(status().isForbidden());
+        assertThat(count("MATCH ()-[r:`INTERESTED IN`]->() RETURN count(r) AS total")).isZero();
+    }
+
     @Test void interestsControlCompanyCatalogVacanciesAndStaffAccessWithoutDeletingAccount() throws Exception {
         var user=registerCandidate("interest@example.com");
         long candidate=user.path("candidateId").asLong();
@@ -237,43 +286,63 @@ class AuthFlowIntegrationTest {
                 CREATE (a)-[:PUBLISHES]->(:VACANCY {role:'Java', city:'Recife', seniority:'PLENO', modalidade:'REMOTO'})
                 CREATE (b)-[:PUBLISHES]->(:VACANCY {role:'Python', city:'Curitiba', seniority:'JUNIOR', modalidade:'HIBRIDO'})
                 """).bindAll(Map.of("a",companyA,"b",companyB)).run();
-        mvc.perform(get("/api/me/companies").header("Authorization","Bearer "+jwt).param("size","1"))
+        mvc.perform(get("/api/me/companies").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt).param("size","1"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.totalElements").value(2))
                 .andExpect(jsonPath("$.content[0].name").value("A")).andExpect(jsonPath("$.content[0].interested").value(false));
-        mvc.perform(get("/api/me/companies").header("Authorization","Bearer "+jwt).param("size","1").param("page","1"))
+        mvc.perform(get("/api/me/companies").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt).param("size","1").param("page","1"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.content[0].name").value("B"));
         for (String path : List.of("/api/me/vacancies", "/api/me/companies")) {
             mvc.perform(get(path)).andExpect(status().isUnauthorized());
-            mvc.perform(get(path).header("Authorization","Bearer "+adminA)).andExpect(status().isForbidden());
-            mvc.perform(get(path).header("Authorization","Bearer "+jwt).param("size","0")).andExpect(status().isBadRequest());
+            mvc.perform(get(path).header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+adminA)).andExpect(status().isForbidden());
+            mvc.perform(get(path).header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt).param("size","0")).andExpect(status().isBadRequest());
         }
-        mvc.perform(get("/api/me/vacancies").header("Authorization","Bearer "+jwt)).andExpect(status().isOk())
+        mvc.perform(get("/api/me/vacancies").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.totalElements").value(0));
-        mvc.perform(get("/api/careermatcher/candidatos/"+candidate).header("Authorization","Bearer "+adminA)).andExpect(status().isNotFound());
-        mvc.perform(put("/api/me/companies/"+companyA+"/interest").header("Authorization","Bearer "+adminA)).andExpect(status().isForbidden());
-        mvc.perform(put("/api/me/companies/9999999/interest").header("Authorization","Bearer "+jwt)).andExpect(status().isNotFound());
-        for (long company : List.of(companyA,companyA,companyB))
-            mvc.perform(put("/api/me/companies/"+company+"/interest").header("Authorization","Bearer "+jwt)).andExpect(status().isNoContent());
+        mvc.perform(get("/api/careermatcher/candidatos/"+candidate).header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+adminA)).andExpect(status().isNotFound());
+        mvc.perform(put("/api/me/companies/"+companyA+"/interest").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+adminA)).andExpect(status().isForbidden());
+        mvc.perform(put("/api/me/companies/9999999/interest").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt)).andExpect(status().isNotFound());
+        for (long company : List.of(companyA,companyA))
+            mvc.perform(put("/api/me/companies/"+company+"/interest").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt)).andExpect(status().isNoContent());
+        assertThat(count("MATCH ()-[r:`INTERESTED IN`]->() RETURN count(r) AS total")).isEqualTo(1);
+        mvc.perform(get("/api/me/vacancies").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.totalElements").value(1))
+                .andExpect(jsonPath("$.content[0].role").value("Java"))
+                .andExpect(jsonPath("$.content[0].companyName").value("A"));
+        mvc.perform(get("/api/careermatcher/candidatos/page").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+adminA))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.totalElements").value(1))
+                .andExpect(jsonPath("$.content[0].id").value(candidate));
+        mvc.perform(get("/api/careermatcher/candidatos/page").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+adminB))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.totalElements").value(0));
+        mvc.perform(get("/api/careermatcher/candidatos/"+candidate).header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+adminB))
+                .andExpect(status().isNotFound());
+        mvc.perform(put("/api/me/companies/"+companyB+"/interest").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt))
+                .andExpect(status().isNoContent());
         assertThat(count("MATCH ()-[r:`INTERESTED IN`]->() RETURN count(r) AS total")).isEqualTo(2);
-        mvc.perform(get("/api/me/companies").header("Authorization","Bearer "+jwt)).andExpect(status().isOk())
+        mvc.perform(get("/api/me/companies").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.content[0].interested").value(true)).andExpect(jsonPath("$.content[1].interested").value(true));
-        mvc.perform(get("/api/me/vacancies").header("Authorization","Bearer "+jwt).param("search","curitiba"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.totalElements").value(1)).andExpect(jsonPath("$.content[0].role").value("Python"));
-        mvc.perform(get("/api/me/vacancies").header("Authorization","Bearer "+jwt).param("sort","role").param("direction","desc").param("size","1"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.totalElements").value(2)).andExpect(jsonPath("$.content[0].role").value("Python"));
+        mvc.perform(get("/api/me/vacancies").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt).param("search","curitiba"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.totalElements").value(1)).andExpect(jsonPath("$.content[0].role").value("Python"))
+                .andExpect(jsonPath("$.content[0].companyName").value("B"));
+        mvc.perform(get("/api/me/vacancies").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt).param("sort","role").param("direction","desc").param("size","1"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.totalElements").value(2)).andExpect(jsonPath("$.content[0].role").value("Python"))
+                .andExpect(jsonPath("$.content[0].companyName").value("B"));
         for (String staff : List.of(adminA, adminB, login("manager@example.com"), login("recruiter@example.com")))
-            mvc.perform(get("/api/careermatcher/candidatos/page").header("Authorization","Bearer "+staff).param("search","Ana"))
+            mvc.perform(get("/api/careermatcher/candidatos/page").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+staff).param("search","Ana"))
                     .andExpect(status().isOk()).andExpect(jsonPath("$.totalElements").value(1));
-        mvc.perform(delete("/api/careermatcher/candidatos/"+candidate).header("Authorization","Bearer "+adminA)).andExpect(status().isNoContent());
-        mvc.perform(get("/api/careermatcher/candidato/"+candidate).header("Authorization","Bearer "+adminA)).andExpect(status().isNotFound());
-        mvc.perform(get("/api/careermatcher/candidatos").header("Authorization","Bearer "+adminA)).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
-        mvc.perform(get("/api/careermatcher/candidatos/"+candidate).header("Authorization","Bearer "+adminB)).andExpect(status().isOk());
-        mvc.perform(get("/api/me/candidate").header("Authorization","Bearer "+jwt)).andExpect(status().isOk());
-        mvc.perform(get("/api/me/vacancies").header("Authorization","Bearer "+jwt)).andExpect(status().isOk())
+        mvc.perform(delete("/api/careermatcher/candidatos/"+candidate).header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+adminA)).andExpect(status().isNoContent());
+        mvc.perform(get("/api/careermatcher/candidato/"+candidate).header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+adminA)).andExpect(status().isNotFound());
+        mvc.perform(get("/api/careermatcher/candidatos").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+adminA)).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
+        mvc.perform(get("/api/careermatcher/candidatos/"+candidate).header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+adminB)).andExpect(status().isOk());
+        mvc.perform(get("/api/me/candidate").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt)).andExpect(status().isOk());
+        mvc.perform(get("/api/me/vacancies").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.totalElements").value(1)).andExpect(jsonPath("$.content[0].role").value("Python"));
-        for (int i=0;i<2;i++) mvc.perform(delete("/api/me/companies/"+companyB+"/interest").header("Authorization","Bearer "+jwt)).andExpect(status().isNoContent());
-        mvc.perform(put("/api/me/companies/"+companyA+"/interest").header("Authorization","Bearer "+jwt)).andExpect(status().isNoContent());
-        mvc.perform(get("/api/careermatcher/candidatos/"+candidate).header("Authorization","Bearer "+adminA)).andExpect(status().isOk());
+        for (int i=0;i<2;i++) mvc.perform(delete("/api/me/companies/"+companyB+"/interest").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt)).andExpect(status().isNoContent());
+        mvc.perform(get("/api/me/vacancies").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.totalElements").value(0));
+        mvc.perform(get("/api/careermatcher/candidatos/page").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+adminB))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.totalElements").value(0));
+        mvc.perform(put("/api/me/companies/"+companyA+"/interest").header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+jwt)).andExpect(status().isNoContent());
+        mvc.perform(get("/api/careermatcher/candidatos/"+candidate).header(HttpHeaders.ORIGIN,FRONTEND_ORIGIN).header("Authorization","Bearer "+adminA)).andExpect(status().isOk());
         assertThat(login("interest@example.com")).isNotBlank();
     }
 

@@ -14,7 +14,7 @@ public class UserRepository {
     private final Neo4jClient client;
     public UserRepository(Neo4jClient client) { this.client = client; }
     private static final String PROJECTION = " RETURN properties(u) AS data, "
-            + "[(u)-[:WORKS_FOR]->(c:COMPANY) | id(c)] AS companies, "
+            + "[(u)-[:WORKS_FOR]->(c:COMPANY) | {id:id(c),name:c.name}] AS companies, "
             + "[(u)-[:IS]->(c:CANDIDATE) | id(c)] AS candidates";
 
     public record Account(AuthUser user, String password, String invitationHash,
@@ -82,13 +82,15 @@ public class UserRepository {
     @SuppressWarnings("unchecked")
     private Account account(Map<String,Object> row) {
         Map<String,Object> data = (Map<String,Object>)row.get("data");
-        List<Number> companies = (List<Number>)row.get("companies"), candidates = (List<Number>)row.get("candidates");
+        List<Map<String,Object>> companies = (List<Map<String,Object>>)row.get("companies");
+        List<Number> candidates = (List<Number>)row.get("candidates");
         Role role = null;
         try { role = Role.valueOf(Objects.toString(data.get("role"),"")); } catch (IllegalArgumentException ignored) {}
         boolean links = role != null && (role.isStaff() ? companies.size()==1 && candidates.isEmpty() : candidates.size()==1 && companies.isEmpty());
         AuthUser user = new AuthUser((String)data.get("id"),(String)data.get("name"),(String)data.get("email"),role,
-                companies.size()==1?companies.getFirst().longValue():null,
-                candidates.size()==1?candidates.getFirst().longValue():null,Boolean.TRUE.equals(data.get("cadastroFinalizado")));
+                companies.size()==1?((Number)companies.getFirst().get("id")).longValue():null,
+                candidates.size()==1?candidates.getFirst().longValue():null,Boolean.TRUE.equals(data.get("cadastroFinalizado")),
+                companies.size()==1?(String)companies.getFirst().get("name"):null);
         Object expires = data.get("invitationExpiresAt");
         Instant expiry = expires == null ? null : expires instanceof java.time.ZonedDateTime time ? time.toInstant() : Instant.parse(expires.toString());
         return new Account(user,(String)data.get("password"),(String)data.get("invitationHash"),expiry,links);

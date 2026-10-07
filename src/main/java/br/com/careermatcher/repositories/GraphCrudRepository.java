@@ -105,7 +105,8 @@ public class GraphCrudRepository {
             order = "toLower(" + summaryText("$sort") + ") " + (direction.equals("desc") ? "DESC" : "ASC") + ", id(n) ASC";
         }
         return client.query(scope.match() + " WITH DISTINCT n ORDER BY " + order + " SKIP $skip LIMIT $limit "
-                        + "RETURN id(n) AS id, [field IN $fields | n[field]] AS values")
+                        + "RETURN id(n) AS id, [field IN $fields | n[field]] AS values"
+                        + (kind == Kind.VACANCY ? ", head([(publisher:COMPANY)-[:PUBLISHES]->(n) | publisher.name]) AS companyName" : ""))
                 .bindAll(parameters).bind(fields).to("fields").bind((long) page * size).to("skip").bind(size).to("limit").fetch().all().stream()
                 .map(row -> {
                     ObjectNode item = mapper.createObjectNode().put("id", ((Number) row.get("id")).longValue());
@@ -113,6 +114,8 @@ public class GraphCrudRepository {
                     for (int index = 0; index < fields.size(); index++) {
                         if (values.get(index) != null) item.set(fields.get(index), mapper.valueToTree(values.get(index)));
                     }
+                    if (kind == Kind.VACANCY && row.get("companyName") != null)
+                        item.put("companyName", (String)row.get("companyName"));
                     return item;
                 }).toList();
     }

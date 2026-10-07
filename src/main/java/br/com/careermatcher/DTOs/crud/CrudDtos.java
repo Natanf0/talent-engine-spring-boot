@@ -29,6 +29,6 @@ public final class CrudDtos {
         public PageView { content = List.copyOf(content); }
     }
     public record CandidateSummary(Long id, String name, String professionalTitle, String phone) {}
-    public record VacancySummary(Long id, String role, String city, SENIORITY seniority, Modalidade modalidade) {}
+    public record VacancySummary(Long id, String role, String city, SENIORITY seniority, Modalidade modalidade, String companyName) {}
 
 }
