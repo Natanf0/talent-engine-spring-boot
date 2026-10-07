@@ -6,6 +6,7 @@ import br.com.careermatcher.models.MatchingExecution;
 import com.fasterxml.jackson.databind.*;
 import org.springframework.stereotype.Component;
 import java.io.*;
+import java.math.BigDecimal;
 import java.util.*;
 
 @Component
@@ -83,52 +84,143 @@ public class ExecutionSnapshotReader {
     }
 
     private static String description(JsonNode vacancy) throws IOException {
-        List<String> lines = new ArrayList<>();
-        String description = text(vacancy, "description");
-        if (description != null && !description.isBlank()) lines.add(description);
-        for (var requirement : array(vacancy.path("skillRequirements")))
-            add(lines, requirement, "Competência", text(requirement.path("skill"), "name"));
+        List<String> sentences = new ArrayList<>();
+        addSentence(sentences, cleanText(vacancy, "description"));
+        List<String> requiredSkills = new ArrayList<>();
+        List<String> desiredSkills = new ArrayList<>();
+        for (var requirement : array(vacancy.path("skillRequirements"))) {
+            String name = cleanText(requirement.path("skill"), "name");
+            if (name != null) (required(requirement) ? requiredSkills : desiredSkills).add(name);
+        }
+        if (!requiredSkills.isEmpty()) {
+            addSentence(sentences, "Para assumir esta posição, é necessário que o(a) candidato(a) possua "
+                    + String.join(", ", requiredSkills)
+                    + (requiredSkills.size() == 1 ? " como habilidade principal" : " como habilidades principais"));
+        }
+        if (!desiredSkills.isEmpty()) {
+            addSentence(sentences, "Como diferenciais, são desejáveis conhecimentos em "
+                    + String.join(", ", desiredSkills));
+        }
+
         var experienceRequirement = vacancy.path("experienceRequirement");
         var experience = experienceRequirement.path("experience");
         if (experience.isObject()) {
-            List<String> values = new ArrayList<>();
-            for (String field : List.of("role", "seniority", "description")) {
-                String value = text(experience, field);
-                if (value != null && !value.isBlank()) values.add(value);
+            // Keep validating this historical snapshot field even though it is not part of the prose.
+            array(experience.path("skills"));
+            String role = cleanText(experience, "role");
+            String duration = duration(experience.path("durationMonths"));
+            if (role != null || duration != null) {
+                addSentence(sentences, "É " + (required(experienceRequirement) ? "obrigatório" : "recomendado")
+                        + " que possua " + (duration == null ? "" : duration + " de ")
+                        + "experiência profissional comprovada" + (role == null ? "" : " como " + role));
             }
-            String months = text(experience, "durationMonths");
-            if (months != null) values.add(months + " meses");
-            for (var skill : array(experience.path("skills"))) {
-                String value = text(skill.path("skill"), "name");
-                if (value != null) values.add(value);
-            }
-            add(lines, experienceRequirement, "Experiência", String.join("; ", values));
         }
+
+        List<String> undergraduateClauses = new ArrayList<>();
+        for (var requirement : array(vacancy.path("undergraduateRequirements"))) {
+            var undergraduate = requirement.path("undergraduate");
+            String field = cleanText(undergraduate, "field");
+            String type = cleanText(undergraduate, "undergraduateType");
+            if (field == null && type == null) continue;
+            String qualification = type == null ? "possua graduação" : switch (type.toUpperCase(Locale.ROOT)) {
+                case "BACHARELADO" -> "seja bacharel";
+                case "LICENCIATURA" -> "seja licenciado(a)";
+                case "TECNOLOGO", "TECNÓLOGO" -> "seja tecnólogo(a)";
+                default -> "possua graduação do tipo " + type;
+            };
+            undergraduateClauses.add("é " + (required(requirement) ? "obrigatório" : "desejável")
+                    + " que " + qualification + (field == null ? "" : " em " + field));
+        }
+        addClauses(sentences, undergraduateClauses, "Também ");
+
+        List<String> graduateClauses = new ArrayList<>();
+        for (var requirement : array(vacancy.path("graduateRequirements"))) {
+            var graduate = requirement.path("graduate");
+            String degree = cleanText(graduate, "degree");
+            String field = cleanText(graduate, "field");
+            String subarea = cleanText(graduate, "subarea");
+            if (degree == null && field == null && subarea == null) continue;
+            String qualification = degree == null ? "pós-graduação" : switch (degree.toUpperCase(Locale.ROOT)) {
+                case "SPECIALIZATION", "ESPECIALIZACAO", "ESPECIALIZAÇÃO" -> "especialização";
+                case "MASTERS", "MESTRADO" -> "mestrado";
+                case "MBA" -> "MBA";
+                case "PHD", "DOUTORADO" -> "doutorado";
+                default -> degree;
+            };
+            String area = field == null ? subarea : field + (subarea == null ? "" : " — " + subarea);
+            graduateClauses.add("é " + (required(requirement) ? "obrigatório" : "recomendado")
+                    + " que tenha como formação acadêmica " + qualification + (area == null ? "" : " em " + area));
+        }
+        if (!graduateClauses.isEmpty()) {
+            addSentence(sentences, "Considerando esta posição, " + String.join("; ", graduateClauses));
+        }
+
+        List<String> languageClauses = new ArrayList<>();
         for (var requirement : array(vacancy.path("languageRequirements"))) {
-            String name = text(requirement.path("language"), "name");
-            String level = text(requirement, "level");
-            if (name != null && level != null) name += " (nível " + level + ")";
-            add(lines, requirement, "Idioma", name);
+            String name = cleanText(requirement.path("language"), "name");
+            if (name == null) continue;
+            String level = languageLevel(requirement.path("level"));
+            languageClauses.add("é " + (required(requirement) ? "obrigatório" : "indicado")
+                    + " que tenha " + (level == null ? "conhecimentos" : "nível " + level) + " em " + name);
         }
-        for (var requirement : array(vacancy.path("undergraduateRequirements")))
-            add(lines, requirement, "Graduação", fields(requirement.path("undergraduate"), "field", "undergraduateType"));
-        for (var requirement : array(vacancy.path("graduateRequirements")))
-            add(lines, requirement, "Pós-graduação", fields(requirement.path("graduate"), "degree", "field", "subarea"));
-        return lines.isEmpty() ? "Nenhum requisito informado." : String.join("\n", lines);
+        addClauses(sentences, languageClauses, "Por fim, ");
+        return sentences.isEmpty() ? "Nenhum requisito informado." : String.join(" ", sentences);
     }
 
-    private static String fields(JsonNode node, String... names) {
-        List<String> values = new ArrayList<>();
-        for (String name : names) {
-            String value = text(node, name);
-            if (value != null && !value.isBlank()) values.add(value);
-        }
-        return String.join("; ", values);
+    private static boolean required(JsonNode requirement) {
+        return requirement.path("required").asBoolean(false);
     }
 
-    private static void add(List<String> lines, JsonNode requirement, String kind, String value) {
+    private static String cleanText(JsonNode node, String field) {
+        String value = text(node, field);
+        if (value == null) return null;
+        value = value.replaceAll("[\\s\\p{Z}]+", " ").trim();
+        return value.isEmpty() ? null : value;
+    }
+
+    private static String duration(JsonNode months) {
+        if (!months.isValueNode() || months.isNull()) return null;
+        final long count;
+        try {
+            count = new BigDecimal(months.asText()).longValueExact();
+        } catch (NumberFormatException | ArithmeticException ignored) {
+            return null;
+        }
+        if (count < 0) return null;
+        if (count <= 12) return count + (count == 1 ? " mês" : " meses");
+        long years = count / 12;
+        long remainder = count % 12;
+        return years + (years == 1 ? " ano" : " anos")
+                + (remainder == 0 ? "" : " e " + remainder + (remainder == 1 ? " mês" : " meses"));
+    }
+
+    private static String languageLevel(JsonNode level) {
+        if (!level.isValueNode() || level.isNull()) return null;
+        String value = level.asText().trim();
+        if (value.isEmpty()) return null;
+        try {
+            value = new BigDecimal(value).stripTrailingZeros().toString();
+        } catch (NumberFormatException ignored) {
+            // Unknown labels from historical snapshots remain readable.
+        }
+        return switch (value) {
+            case "1" -> "iniciante";
+            case "3" -> "intermediário";
+            case "6" -> "avançado";
+            case "9" -> "fluente";
+            default -> value;
+        };
+    }
+
+    private static void addClauses(List<String> sentences, List<String> clauses, String connector) {
+        if (clauses.isEmpty()) return;
+        String value = String.join("; ", clauses);
+        addSentence(sentences, sentences.isEmpty() ? "É" + value.substring(1) : connector + value);
+    }
+
+    private static void addSentence(List<String> sentences, String value) {
         if (value == null || value.isBlank()) return;
-        String necessity = requirement.path("required").asBoolean(false) ? "Obrigatório" : "Desejável";
-        lines.add(necessity + " — " + kind + ": " + value);
+        char last = value.charAt(value.length() - 1);
+        sentences.add(last == '.' || last == '!' || last == '?' ? value : value + ".");
     }
 }
