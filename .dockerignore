@@ -1,0 +1,14 @@
+# Only application sources and the Maven descriptor belong in the build context.
+**
+!pom.xml
+!src/
+!src/**
+
+# Never include local configuration or credentials, even below src/.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.jks
