@@ -1,5 +1,6 @@
 package br.com.careermatcher.matching;
 
+import br.com.careermatcher.deployment.DeploymentState;
 import br.com.careermatcher.interfaces.MatchingService;
 import br.com.careermatcher.security.CurrentActor;
 import org.slf4j.Logger;
@@ -21,13 +22,16 @@ public class MatchingSubmissionService {
     private final MatchingSelectionValidator selections;
     private final MatchingService matching;
     private final CurrentActor actor;
+    private final DeploymentState deployment;
 
     public MatchingSubmissionService(@Qualifier("matchingExecutor") TaskExecutor executor,
-            MatchingSelectionValidator selections, MatchingService matching, CurrentActor actor) {
+            MatchingSelectionValidator selections, MatchingService matching, CurrentActor actor,
+            DeploymentState deployment) {
         this.executor = executor;
         this.selections = selections;
         this.matching = matching;
         this.actor = actor;
+        this.deployment = deployment;
     }
 
     public void submit(MatchingSelectionValidator.SelectedIds ids, int k, double factor, double floor) {
@@ -36,6 +40,8 @@ public class MatchingSubmissionService {
         // A separate context survives HTTP request cleanup; the wrapper restores/clears it after work.
         var context = SecurityContextHolder.createEmptyContext();
         context.setAuthentication(SecurityContextHolder.getContext().getAuthentication());
+        // Count before enqueueing, including queued work and the executor handoff interval.
+        deployment.matchingAccepted();
         try {
             executor.execute(new DelegatingSecurityContextRunnable(() -> {
                 long start = System.nanoTime();
@@ -48,11 +54,17 @@ public class MatchingSubmissionService {
                 } catch (RuntimeException failure) {
                     log.error("Matching failed: requestId={}, companyId={}, failureType={}, elapsedMs={}",
                             requestId, companyId, failure.getClass().getSimpleName(), (System.nanoTime() - start) / 1_000_000);
+                } finally {
+                    deployment.matchingFinished();
                 }
             }, context));
         } catch (RejectedExecutionException rejected) {
+            deployment.matchingFinished();
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                     "Não foi possível aceitar a execução agora. Tente novamente em instantes.");
+        } catch (RuntimeException failure) {
+            deployment.matchingFinished();
+            throw failure;
         }
         log.info("Matching accepted: requestId={}, companyId={}", requestId, companyId);
     }

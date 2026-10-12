@@ -98,6 +98,7 @@ public class GraphCrudRepository {
         Scope scope = pageScope(kind, search);
         List<String> fields = summaryFields(kind);
         Map<String, Object> parameters = new HashMap<>(scope.parameters());
+        if (kind == Kind.VACANCY) parameters.put("companyNameProperty", "name");
         String order = "id(n) ASC";
         if (sort != null) {
             parameters.put("sort", sort);
@@ -106,7 +107,10 @@ public class GraphCrudRepository {
         }
         return client.query(scope.match() + " WITH DISTINCT n ORDER BY " + order + " SKIP $skip LIMIT $limit "
                         + "RETURN id(n) AS id, [field IN $fields | n[field]] AS values"
-                        + (kind == Kind.VACANCY ? ", head([(publisher:COMPANY)-[:PUBLISHES]->(n) | publisher.name]) AS companyName" : ""))
+                        // Match the parameterized scope above even before these schema tokens exist.
+                        + (kind == Kind.VACANCY ? ", head([(publisher)-[published]->(n) "
+                            + "WHERE $companyLabel IN labels(publisher) AND type(published)=$publicationRelationship "
+                            + "| publisher[$companyNameProperty]]) AS companyName" : ""))
                 .bindAll(parameters).bind(fields).to("fields").bind((long) page * size).to("skip").bind(size).to("limit").fetch().all().stream()
                 .map(row -> {
                     ObjectNode item = mapper.createObjectNode().put("id", ((Number) row.get("id")).longValue());

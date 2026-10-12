@@ -1,5 +1,7 @@
 # Deploy na VPS Hostinger
 
+**Deploy automático dos backends:** após a instalação inicial, siga [CI/CD com GitHub Actions](CI_CD.md). O guia configura testes, imagens privadas no GHCR, acesso SSH, manutenção com espera pelos matchings e rollback. Há uma preparação única na VPS e nos dois repositórios; depois, os pushes em `main` disparam as atualizações.
+
 Este roteiro instala Nginx no Ubuntu 26.04 LTS e executa dois containers Spring e um FastAPI com Docker Compose. Os comandos da VPS assumem uma sessão `root`; substitua os valores em maiúsculas antes de executá-los.
 
 | Serviço | Endereço | Exposição |
@@ -197,6 +199,35 @@ Mantenha a porta 80 acessível para renovação. Não reinstale o `nginx.conf` i
 
 Na Cloudflare, configure a variável de **build de produção** do frontend como `TALENT_API_URL=https://api.talentengine.com.br`, sem `/api`, e faça um novo build/deploy. `https://talentengine.com.br/config.json` deve retornar `apiBaseUrl` com esse endereço.
 
+O frontend é publicado no **Cloudflare Workers**, Worker `talent-engine-front-end`, pelo repositório `Natanf0/talent-engine-front-end`, branch `main`. Mantenha Root directory `/`, Build command `npm run build`, Deploy command `npx wrangler deploy` e o comando de preview `npx wrangler preview`. As variáveis de build dos previews são configuradas separadamente.
+
+O `wrangler.jsonc` na raiz **do repositório do frontend** deve conter:
+
+```json
+{
+  "name": "talent-engine-front-end",
+  "compatibility_date": "2026-10-08",
+  "assets": {
+    "directory": "./dist/talent-engine/browser",
+    "not_found_handling": "single-page-application"
+  }
+}
+```
+
+Essa opção habilita o [fallback SPA do Workers](https://developers.cloudflare.com/workers/static-assets/routing/single-page-application/): o Worker entrega `index.html` ao abrir ou recarregar uma rota do Angular. O arquivo `_redirects` na raiz do frontend não configura este deploy. Um erro HTTP 404 em `talentengine.com.br/empresas-parceiras`, antes de o Angular carregar, deve ser corrigido no Worker. O Nginx da VPS atende somente `api.talentengine.com.br`.
+
+Para publicar a correção, faça commit e push dos arquivos alterados do **frontend**, incluindo `wrangler.jsonc`, `package.json`, `package-lock.json` e os ajustes de autenticação, para `main`. Aguarde o build automático concluir e verifique o domínio personalizado `talentengine.com.br`. Alterar somente este README ou atualizar os containers da VPS não publica o frontend.
+
+Após o deploy:
+
+1. Como candidato, abra e recarregue `/empresas-parceiras`.
+2. Em janela anônima, abra uma vaga existente em `/oportunidades/:id`, recarregue e confirme que não exige login.
+3. Abra um convite novo `/finalizar-cadastro#token=...` sem sessão e conclua o cadastro. O fragmento é lido pelo Angular, sem ser enviado ao Worker.
+4. Entre como administrador, gerente ou recrutador e abra “Saiba mais” do PDF em outra aba do mesmo navegador. `/candidatos/:id` deve reutilizar a sessão válida, confirmada em `/api/auth/me`. Sem sessão, deve pedir login e retornar ao currículo após autenticar.
+5. Saia da conta em uma aba e confirme que as outras áreas protegidas também pedem login. Uma vaga pública deve continuar acessível.
+
+A sessão passa a usar `localStorage`, com uma conta por origem e perfil do navegador. O JWT continua expirando em uma hora, sem renovação; outro navegador exige login. Na primeira abertura após a atualização, a sessão antiga por aba é descartada e será necessário entrar novamente. Logout, expiração e troca de conta recarregam as outras abas para limpar os dados anteriores e revalidar as permissões. Nenhum token de autenticação é colocado nos links do PDF.
+
 Teste o preflight CORS:
 
 ```bash
@@ -232,6 +263,8 @@ docker compose up -d --no-build --pull never --wait --wait-timeout 240 spring1
 De outra máquina, tentativas HTTP para `IP_DA_VPS:3000`, `:3001` e `:8000` devem falhar. Esses testes são verificações a executar no servidor; criar os arquivos locais não comprova que o deploy remoto foi realizado.
 
 ## 7. Operação, atualização e rollback
+
+**Se já ativou o CI/CD, use os comandos de [operação e recuperação da esteira](CI_CD.md#5-operação-e-recuperação).** O procedimento manual com `RELEASE` abaixo se aplica apenas à instalação anterior à migração; a esteira usa `SPRING_IMAGE` e `FASTAPI_IMAGE` separadamente.
 
 ```bash
 cd /opt/talentengine

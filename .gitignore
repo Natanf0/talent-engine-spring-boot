@@ -8,6 +8,7 @@
 !/mvnw.cmd
 !/.dockerignore
 !/deploy/
+!/.github/
 
 !/.mvn/
 /.mvn/*
@@ -38,6 +39,8 @@ node_modules/
 *.class
 *.log
 *.tmp
+__pycache__/
+*.py[cod]
 .DS_Store
 
 ### IDE configuration ###

@@ -1,0 +1,131 @@
+# CI/CD runtime configuration. Install as /opt/talentengine/compose.yaml after bootstrap.
+name: talentengine
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-spring: &spring
+  image: "${SPRING_IMAGE:?Set SPRING_IMAGE in /opt/talentengine/.env}"
+  restart: unless-stopped
+  init: true
+  env_file:
+    - path: ./secrets/spring.env
+      format: raw
+    - path: ./secrets/deploy.env
+      format: raw
+  environment:
+    DEPLOY_CONTROL_DIRECTORY: /run/deploy
+    SERVER_PORT: "8081"
+    SERVER_SHUTDOWN: graceful
+    SERVER_FORWARD_HEADERS_STRATEGY: framework
+    SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE: 90s
+
+    AUTH_ISSUER: talentengine
+    AUTH_PRIVATE_KEY: file:/run/keys/private.pem
+    AUTH_PUBLIC_KEY: file:/run/keys/public.pem
+    FRONTEND_URL: https://talentengine.com.br
+    ALLOWED_ORIGINS: https://talentengine.com.br
+
+    REPORTS_BASE_URL: http://fastapi:8000
+    MATCHING_ASYNC_WORKERS: "1"
+    MATCHING_ASYNC_QUEUE_CAPACITY: "20"
+
+    # RabbitMQ is not used by the current HTTP/matching/report flows.
+    MANAGEMENT_HEALTH_RABBIT_ENABLED: "false"
+    MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: never
+    MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health
+
+    JAVA_TOOL_OPTIONS: >-
+      -Xms256m -Xmx2g -XX:+ExitOnOutOfMemoryError
+
+  volumes:
+    - type: bind
+      source: ./deploy/control
+      target: /run/deploy
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ./secrets/private.pem
+      target: /run/keys/private.pem
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ./secrets/public.pem
+      target: /run/keys/public.pem
+      read_only: true
+      bind:
+        create_host_path: false
+
+  depends_on:
+    fastapi:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "--max-time", "8", "http://127.0.0.1:8081/actuator/health"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 90s
+  mem_limit: 3g
+  cpus: "1.5"
+  stop_grace_period: 120s
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging: *logging
+
+services:
+  fastapi:
+    image: "${FASTAPI_IMAGE:?Set FASTAPI_IMAGE in /opt/talentengine/.env}"
+    restart: unless-stopped
+    init: true
+    user: "10001:10001"
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      REPORTS_JWT_PUBLIC_KEY: /run/keys/public.pem
+      REPORTS_JWT_ISSUER: talentengine
+      REPORTS_FRONTEND_URL: https://talentengine.com.br
+    volumes:
+      - type: bind
+        source: ./secrets/public.pem
+        target: /run/keys/public.pem
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3).close()"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 2g
+    cpus: "1.0"
+    stop_grace_period: 90s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *logging
+
+  spring1:
+    <<: *spring
+    ports:
+      - "127.0.0.1:3000:8081"
+
+  spring2:
+    <<: *spring
+    ports:
+      - "127.0.0.1:3001:8081"
+
+# The default bridge permits outbound access to Neo4j Aura, R2 and SMTP.
+# FastAPI has no published host port; only the Spring containers call it.

@@ -31,7 +31,7 @@ class TalentEngineControllerTest {
 
     private MockMvc controller(TaskExecutor executor) {
         return standaloneSetup(new TalentEngineController(
-                new MatchingSubmissionService(executor, validator, matching, actor),
+                new MatchingSubmissionService(executor, validator, matching, actor, new br.com.careermatcher.deployment.DeploymentState("", "")),
                 validator, mock(LatestExecutionStore.class), () -> 1)).build();
     }
     @BeforeEach void setup() {

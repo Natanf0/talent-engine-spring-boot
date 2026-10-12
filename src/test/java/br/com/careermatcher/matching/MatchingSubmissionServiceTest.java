@@ -27,7 +27,8 @@ class MatchingSubmissionServiceTest {
     private final MatchingService matching = mock(MatchingService.class);
     private final MatchingSelectionValidator selections = new MatchingSelectionValidator(repository, mapper, actor, 200);
     private final ThreadPoolTaskExecutor executor = new MatchingAsyncConfiguration().matchingExecutor(1, 1);
-    private final MatchingSubmissionService submissions = new MatchingSubmissionService(executor, selections, matching, actor);
+    private final br.com.careermatcher.deployment.DeploymentState deployment = new br.com.careermatcher.deployment.DeploymentState("", "");
+    private final MatchingSubmissionService submissions = new MatchingSubmissionService(executor, selections, matching, actor, deployment);
     private final MatchingSelectionValidator.SelectedIds ids = new MatchingSelectionValidator.SelectedIds(List.of(1L), List.of(2L));
     private final MatchingRunResponse result = new MatchingRunResponse("RUN-test", Instant.EPOCH,
             new AllocationResponse(List.of(), Set.of(), 0));
@@ -71,6 +72,7 @@ class MatchingSubmissionServiceTest {
             assertThat(entered.await(10, TimeUnit.SECONDS)).isTrue();
             verifyNoInteractions(matching);
             submissions.submit(ids, 10, .65, 5);
+            assertThat(deployment.status().pendingMatchings()).isEqualTo(2);
             assertThatThrownBy(() -> submissions.submit(ids, 10, .65, 5))
                     .isInstanceOfSatisfying(ResponseStatusException.class,
                             error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
@@ -112,6 +114,7 @@ class MatchingSubmissionServiceTest {
             assertThat(completed.await(10, TimeUnit.SECONDS)).isTrue();
             assertThat(executor.submit(() -> SecurityContextHolder.getContext().getAuthentication())
                     .get(10, TimeUnit.SECONDS)).isNull();
+            assertThat(deployment.status().pendingMatchings()).isZero();
             assertThat(observed).containsExactly(10L, 20L, 20L);
             verify(repository, times(1)).findByIds(eq(CANDIDATE), anyList(), anyInt());
             verify(matching, times(1)).generateShortlists(anyList(), anyList(), anyInt(), anyDouble(), anyDouble());
@@ -126,6 +129,7 @@ class MatchingSubmissionServiceTest {
         assertThatThrownBy(() -> submissions.submit(ids, 10, .65, 5))
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
+        assertThat(deployment.status().pendingMatchings()).isZero();
         verifyNoInteractions(repository, matching);
     }
 
@@ -134,6 +138,7 @@ class MatchingSubmissionServiceTest {
         assertThatThrownBy(() -> submissions.submit(ids, 10, .65, 5))
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED));
+        assertThat(deployment.status().pendingMatchings()).isZero();
         verifyNoInteractions(repository, matching);
     }
 }

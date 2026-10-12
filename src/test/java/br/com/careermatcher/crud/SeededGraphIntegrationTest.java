@@ -165,7 +165,7 @@ class SeededGraphIntegrationTest {
                 new DynamicCutoffService(), executionService, new SelectedParticipantsMapper());
         var validator = new MatchingSelectionValidator(graph, mapper, actor, 200);
         var tasks = new ArrayList<Runnable>();
-        var controller = new TalentEngineController(new MatchingSubmissionService(tasks::add, validator, service, actor),
+        var controller = new TalentEngineController(new MatchingSubmissionService(tasks::add, validator, service, actor, new br.com.careermatcher.deployment.DeploymentState("", "")),
                 validator, latest, () -> companyId);
         var body = mapper.valueToTree(Map.of("candidateIds", List.of(candidate.id()), "vacancyIds", List.of(vacancy.id())));
         var accepted = controller.run(body, 1, .65, 0);
