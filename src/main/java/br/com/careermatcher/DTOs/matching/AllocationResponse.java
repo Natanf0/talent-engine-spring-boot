@@ -133,7 +133,18 @@ public record AllocationResponse(
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record VacancyExperienceRequirement(Boolean required, ExperienceDetails experience) {
+    public record VacancyExperienceRequirement(Boolean required, VacancyExperienceDetails experience) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record VacancyExperienceDetails(
+            String id,
+            String role,
+            String companyName,
+            String description,
+            Integer durationMonths,
+            SENIORITY seniority
+    ) {
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)

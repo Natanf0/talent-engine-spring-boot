@@ -217,8 +217,9 @@ public class GraphCrudRepository {
             Map<Kind, Set<Long>> next = new EnumMap<>(Kind.class);
             for (var entry : pending.entrySet()) {
                 Kind sourceKind = entry.getKey();
-                var edges = GraphSchema.node(sourceKind).edges().stream().map(edge -> Map.of(
+                var edges = GraphSchema.node(sourceKind, kind).edges().stream().map(edge -> Map.of(
                         "field", edge.field(), "relationship", edge.relationship(), "targetLabel", edge.target().name())).toList();
+                if (edges.isEmpty()) continue;
                 for (List<Long> batch : batches(new ArrayList<>(entry.getValue()), batchSize)) {
                     var rows = client.query("""
                             UNWIND $ids AS sourceId
@@ -247,7 +248,7 @@ public class GraphCrudRepository {
         }
 
         Map<Long, ObjectNode> roots = new HashMap<>();
-        for (long id : uniqueIds) roots.put(id, assemble(new NodeKey(kind, id), graph));
+        for (long id : uniqueIds) roots.put(id, assemble(new NodeKey(kind, id), graph, kind));
         if (kind == Kind.CANDIDATE) {
             for (List<Long> batch : batches(uniqueIds, batchSize)) {
                 var emails = client.query("""
@@ -277,13 +278,13 @@ public class GraphCrudRepository {
     }
 
     /** Reconstruct exactly the CRUD representation, including edge attributes and list order. */
-    private ObjectNode assemble(NodeKey key, Map<NodeKey, LoadedNode> graph) {
+    private ObjectNode assemble(NodeKey key, Map<NodeKey, LoadedNode> graph, Kind aggregate) {
         LoadedNode node = graph.get(key);
         ObjectNode result = node.properties().deepCopy();
-        for (Edge edge : GraphSchema.node(key.kind()).edges()) {
+        for (Edge edge : GraphSchema.node(key.kind(), aggregate).edges()) {
             ArrayNode values = mapper.createArrayNode();
             for (GraphLink link : node.edges().getOrDefault(edge.field(), List.of())) {
-                ObjectNode target = assemble(link.target(), graph);
+                ObjectNode target = assemble(link.target(), graph, aggregate);
                 if (edge.wrapper() == null) values.add(target);
                 else {
                     ObjectNode wrapper = mapper.createObjectNode();
@@ -319,11 +320,15 @@ public class GraphCrudRepository {
     }
 
     private ObjectNode findGraph(Kind kind, long id) {
+        return findGraph(kind, id, kind);
+    }
+
+    private ObjectNode findGraph(Kind kind, long id, Kind aggregate) {
         Map<String, Object> properties = client.query("MATCH (n) WHERE id(n)=$id AND $label IN labels(n) RETURN properties(n) AS properties")
                 .bind(kind.name()).to("label").bind(id).to("id").fetch().one().map(row -> castMap(row.get("properties")))
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Registro não encontrado."));
         ObjectNode result = readProperties(kind, id, properties);
-        for (Edge edge : GraphSchema.node(kind).edges()) {
+        for (Edge edge : GraphSchema.node(kind, aggregate).edges()) {
             // Optional types and labels may not exist yet in a freshly seeded database.
             var relationships = client.query("""
                     MATCH (n)-[r]->(t)
@@ -337,7 +342,7 @@ public class GraphCrudRepository {
                             "orderProperty", ORDER_PROPERTY)).fetch().all();
             ArrayNode values = mapper.createArrayNode();
             for (var relationship : relationships) {
-                ObjectNode target = findGraph(edge.target(), ((Number) relationship.get("target")).longValue());
+                ObjectNode target = findGraph(edge.target(), ((Number) relationship.get("target")).longValue(), aggregate);
                 if (edge.wrapper() == null) values.add(target);
                 else {
                     ObjectNode wrapper = mapper.createObjectNode();
@@ -370,10 +375,15 @@ public class GraphCrudRepository {
 
     /** Public lookup is deliberately restricted to a published vacancy aggregate. */
     public ObjectNode findPublicVacancy(long id) {
-        if (client.query("MATCH (:COMPANY)-[:PUBLISHES]->(v:VACANCY) WHERE id(v)=$id RETURN id(v) AS id LIMIT 1")
-                .bind(id).to("id").fetch().one().isEmpty())
+        var publication = client.query("MATCH (company:COMPANY)-[:PUBLISHES]->(v:VACANCY) "
+                        + "WHERE id(v)=$id RETURN company.about AS companyAbout LIMIT 1")
+                .bind(id).to("id").fetch().one();
+        if (publication.isEmpty())
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Vaga não encontrada.");
-        return findGraph(Kind.VACANCY, id);
+        ObjectNode result = findGraph(Kind.VACANCY, id);
+        Object about = publication.get().get("companyAbout");
+        if (about != null) result.put("companyAbout", about.toString());
+        return result;
     }
 
     public long create(Kind kind, ObjectNode data) {

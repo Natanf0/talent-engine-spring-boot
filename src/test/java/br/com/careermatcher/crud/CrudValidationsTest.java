@@ -64,6 +64,34 @@ class CrudValidationsTest {
         assertThat(validation.validate(CANDIDATE, candidate().put("name", "a".repeat(150))).path("name").asText()).hasSize(150);
     }
 
+    @Test void sanitizesAndLimitsVacancyAdditionalInformation() throws Exception {
+        ObjectNode vacancy = object("{\"role\":\"Dev\",\"city\":\"Recife\",\"seniority\":\"PLENO\",\"modalidade\":\"REMOTO\"}");
+        vacancy.put("additionalInfo", "<p>Benefícios <strong>importantes</strong><script>bad()</script></p>");
+        ObjectNode clean = validation.validate(VACANCY, vacancy);
+        assertThat(clean.path("additionalInfo").asText()).contains("<p>", "<strong>importantes</strong>")
+                .doesNotContain("script", "bad()");
+        assertInvalid(VACANCY, vacancy.put("additionalInfo", "a".repeat(1501)), "additionalInfo");
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"[]", "null", "[{\"weight\":1,\"skill\":{\"name\":\"Java\"}}]"})
+    void rejectsExperienceSkillsOnVacancyCreationAndEditing(String skills) throws Exception {
+        ObjectNode vacancy = object("""
+                {"role":"Dev","city":"Recife","seniority":"PLENO","modalidade":"REMOTO",
+                 "experienceRequirement":{"required":true,"experience":{
+                   "role":"Backend","durationMonths":12,"seniority":"PLENO"}}}
+                """);
+        ObjectNode clean = validation.validate(VACANCY, vacancy);
+        assertThat(clean.path("experienceRequirement").path("experience").has("skills")).isFalse();
+        ((ObjectNode) vacancy.path("experienceRequirement").path("experience"))
+                .set("skills", mapper.readTree(skills));
+        assertInvalid(VACANCY, vacancy, "experienceRequirement.experience.skills");
+        ObjectNode patch = object("{\"experienceRequirement\":{\"experience\":{\"skills\":" + skills + "}}}");
+        assertThatThrownBy(() -> new VagaValidations(validation).patch(clean, patch))
+                .isInstanceOfSatisfying(ValidationException.class, e -> assertThat(e.errors())
+                        .extracting(ValidationException.FieldError::field)
+                        .contains("experienceRequirement.experience.skills"));
+    }
+
     @Test void rejectsDuplicateNamesAndNonFiniteNumbers() throws Exception {
         ObjectNode resume = object("{\"skills\":[{\"weight\":1,\"skill\":{\"name\":\" Java  Script \"}},{\"weight\":2,\"skill\":{\"name\":\"java script\"}}]}");
         assertInvalid(RESUME, resume, "skills[1]");

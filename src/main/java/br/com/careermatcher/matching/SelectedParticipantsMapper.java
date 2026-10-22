@@ -30,7 +30,7 @@ public class SelectedParticipantsMapper {
                 .map(item -> new VacancySkill(null, item.weight(), item.required(), skill(item.skill()))).toList());
         if (source.experienceRequirement() != null) {
             var item = source.experienceRequirement();
-            result.setExperience(new VacancyExperience(null, item.required(), experience(item.experience())));
+            result.setExperience(new VacancyExperience(null, item.required(), vacancyExperience(item.experience())));
         }
         result.setLanguages(safe(source.languageRequirements()).stream()
                 .map(item -> new VacancyLanguage(null, item.required(), item.level(), language(item.language()))).toList());
@@ -51,6 +51,14 @@ public class SelectedParticipantsMapper {
                 .map(item -> new CandidateLanguage(null, item.level(), language(item.language()))).toList());
         if (source.undergraduate() != null) result.setUndergraduate(undergraduate(source.undergraduate()));
         result.setGraduates(safe(source.graduates()).stream().map(this::graduate).toList());
+        return result;
+    }
+
+    private Experience vacancyExperience(VacancyExperienceDetails source) {
+        if (source == null) return null;
+        Experience result = new Experience(source.role(), source.companyName(), source.description(),
+                source.durationMonths(), source.seniority(), List.of());
+        result.setId(id(source.id()));
         return result;
     }
 

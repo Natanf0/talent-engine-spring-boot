@@ -10,6 +10,7 @@ import br.com.careermatcher.enums.SENIORITY;
 import br.com.careermatcher.enums.UNDERGRADUATETYPE;
 import br.com.careermatcher.models.*;
 import br.com.careermatcher.relations.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -88,8 +89,9 @@ class MatchingResponseMapperTest {
                 .isEqualTo(new AllocationResponse.VacancySkillRequirement(
                         0.9, true, new AllocationResponse.SkillDetails("101", "Java")));
         assertThat(shortlist.vacancy().experienceRequirement().required()).isTrue();
-        assertThat(shortlist.vacancy().experienceRequirement().experience().skills().getFirst().weight())
-                .isEqualTo(0.85);
+        assertThat(shortlist.vacancy().experienceRequirement().experience().durationMonths()).isEqualTo(36);
+        assertThat(new ObjectMapper().valueToTree(shortlist.vacancy().experienceRequirement())
+                .path("experience").has("skills")).isFalse();
         assertThat(shortlist.vacancy().languageRequirements().getFirst().level()).isEqualTo(0.7);
         assertThat(shortlist.vacancy().undergraduateRequirements().getFirst().required()).isTrue();
         assertThat(shortlist.vacancy().graduateRequirements().getFirst().required()).isFalse();
@@ -102,6 +104,7 @@ class MatchingResponseMapperTest {
         assertThat(details.resume().skills().getFirst().weight()).isEqualTo(0.95);
         assertThat(details.resume().languages().getFirst().level()).isEqualTo(0.8);
         assertThat(details.resume().experiences().getFirst().companyName()).isEqualTo("ACME");
+        assertThat(details.resume().experiences().getFirst().skills().getFirst().weight()).isEqualTo(0.85);
         assertThat(details.resume().undergraduate().completionDate())
                 .isEqualTo(Instant.parse("2024-06-30T12:00:00Z"));
         assertThat(details.resume().undergraduate().projects().getFirst().skills().getFirst().weight())
