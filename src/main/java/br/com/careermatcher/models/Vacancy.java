@@ -20,6 +20,7 @@ public class Vacancy {
     @NonNull private String role, city;
     @NonNull private SENIORITY seniority;
     @NonNull private Modalidade  modalidade;
+    @Setter private String additionalInfo;
 
     @Relationship(type = "NEEDS_UNDERGRAD", direction = Relationship.Direction.OUTGOING)
     @Setter private List<VacancyUndergrad> undergraduates; // Normalmente vagas possuem uma lista de graduações correlatas de interesse. Então decidi cobrir isto

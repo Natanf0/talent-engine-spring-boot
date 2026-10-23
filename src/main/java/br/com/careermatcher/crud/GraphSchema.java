@@ -45,7 +45,8 @@ public final class GraphSchema {
                     field("linkedinURL", Type.URL, false, 2048),
                     field("personalWebsiteURL", Type.URL, false, 2048)), List.of(edge("resume", "HAS", Kind.RESUME, false)));
             case VACANCY -> new Node(kind, List.of(text("role", true), field("city", Type.TEXT, true, 100),
-                    enumeration("seniority", true, SENIORITY.class), enumeration("modalidade", true, Modalidade.class)),
+                    enumeration("seniority", true, SENIORITY.class), enumeration("modalidade", true, Modalidade.class),
+                    field("additionalInfo", Type.HTML, false, 1500)),
                     List.of(weighted("skillRequirements", "NEEDS_SKILL", true), language(true),
                             requirement("experienceRequirement", "NEEDS_EXPERIENCE", Kind.EXPERIENCE, "experience", false),
                             requirement("undergraduateRequirements", "NEEDS_UNDERGRAD", Kind.UNDERGRADUATE, "undergraduate", true),

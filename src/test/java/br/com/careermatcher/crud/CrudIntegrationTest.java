@@ -398,6 +398,71 @@ class CrudIntegrationTest {
                 .isInstanceOf(org.springframework.web.server.ResponseStatusException.class).hasMessageContaining("404");
     }
 
+    @Test void assistedImportOnlyPersistsAfterReviewAndSave() throws Exception {
+        var actor = context.getBean(TestActor.class);
+        var candidate = registerInterested(object("{\"name\":\"Ana original\",\"professionalTitle\":\"Dev\"}"));
+        var defaults = new br.com.careermatcher.ai.AiExtractionProperties(true, 5242880, 20, 60000, 2,
+                new br.com.careermatcher.ai.AiExtractionProperties.Deepseek("test-key", "https://deepseek.test", "deepseek-flash",
+                        java.time.Duration.ofSeconds(5), java.time.Duration.ofSeconds(60), 8192));
+        var builder = org.springframework.web.client.RestClient.builder().baseUrl("https://deepseek.test");
+        var provider = org.springframework.test.web.client.MockRestServiceServer.bindTo(builder).build();
+        var extraction = new br.com.careermatcher.ai.AiExtractionService(defaults,
+                new br.com.careermatcher.ai.PdfTextExtractionService(defaults),
+                new br.com.careermatcher.ai.ExtractionPromptFactory(mapper),
+                new br.com.careermatcher.ai.DeepSeekClient(builder.build(), defaults, mapper), context.getBean(GraphValidations.class));
+        var api = MockMvcBuilders.standaloneSetup(new br.com.careermatcher.ai.AiExtractionController(actor, extraction),
+                        new br.com.careermatcher.security.SelfCandidateController(actor, candidates), new VagaController(vacancies))
+                .setControllerAdvice(new br.com.careermatcher.ai.AiExtractionExceptionHandler(), new CrudExceptionHandler()).build();
+        var imported = object("""
+                {"name":"Ana importada","professionalTitle":"Desenvolvedora Java",
+                 "resume":{"skills":[{"skill":{"name":"Java"}}]}}
+                """);
+        var vacancy = fixture("vacancy").put("additionalInfo", "<p>Benefícios extraídos</p>");
+        for (ObjectNode draft : List.of(imported, vacancy)) {
+            var content = mapper.createObjectNode(); content.set("data", draft);
+            var response = mapper.createObjectNode();
+            var choice = response.putArray("choices").addObject(); choice.put("finish_reason", "stop");
+            choice.putObject("message").put("content", content.toString());
+            provider.expect(org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo("https://deepseek.test/chat/completions"))
+                    .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess(response.toString(), MediaType.APPLICATION_JSON));
+        }
+        byte[] pdf;
+        try (var document = new org.apache.pdfbox.pdmodel.PDDocument(); var out = new java.io.ByteArrayOutputStream()) {
+            var page = new org.apache.pdfbox.pdmodel.PDPage(); document.addPage(page);
+            try (var text = new org.apache.pdfbox.pdmodel.PDPageContentStream(document, page)) {
+                text.beginText();
+                text.setFont(new org.apache.pdfbox.pdmodel.font.PDType1Font(org.apache.pdfbox.pdmodel.font.Standard14Fonts.FontName.HELVETICA), 12);
+                text.newLineAtOffset(50, 700); text.showText("Ana importada - Desenvolvedora Java - Competencias Java"); text.endText();
+            }
+            document.save(out); pdf = out.toByteArray();
+        }
+        actor.candidate(candidate.id());
+        long before = count("MATCH (n) RETURN count(n) AS count");
+        var suggestion = api.perform(multipart("/api/me/candidate/ai-extraction")
+                        .file(new org.springframework.mock.web.MockMultipartFile("file", "linkedin.pdf", "application/pdf", pdf)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.pendingFields[0].field").value("resume.skills[0].weight"))
+                .andReturn();
+        assertThat(count("MATCH (n) RETURN count(n) AS count")).isEqualTo(before);
+        assertThat(candidates.findCandidate(candidate.id()).name()).isEqualTo("Ana original");
+        ObjectNode reviewed = (ObjectNode) mapper.readTree(suggestion.getResponse().getContentAsString()).path("data");
+        ((ObjectNode) reviewed.at("/resume/skills/0")).put("weight", 2);
+        api.perform(patch("/api/me/candidate").contentType(MediaType.APPLICATION_JSON).content(reviewed.toString()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.name").value("Ana importada"))
+                .andExpect(jsonPath("$.resume.skills[0].weight").value(2));
+        actor.staff(companyId);
+        before = count("MATCH (n) RETURN count(n) AS count");
+        var vacancySuggestion = api.perform(multipart("/api/careermatcher/vagas/ai-extraction").param("text", "Vaga Java remota com benefícios"))
+                .andExpect(status().isOk()).andReturn();
+        assertThat(count("MATCH (n) RETURN count(n) AS count")).isEqualTo(before);
+        JsonNode vacancyData = mapper.readTree(vacancySuggestion.getResponse().getContentAsString()).path("data");
+        var saved = api.perform(post("/api/careermatcher/vagas").contentType(MediaType.APPLICATION_JSON).content(vacancyData.toString()))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.additionalInfo").value("<p>Benefícios extraídos</p>"))
+                .andReturn();
+        long id = mapper.readTree(saved.getResponse().getContentAsString()).path("id").asLong();
+        assertThat(vacancies.find(id).additionalInfo()).isEqualTo("<p>Benefícios extraídos</p>");
+        provider.verify();
+    }
+
     private br.com.careermatcher.DTOs.crud.CrudDtos.CandidateView registerInterested(ObjectNode input) {
         var candidate = candidates.registerCandidate(input);
         client.query("MATCH (c:CANDIDATE), (company:COMPANY) WHERE id(c)=$candidate AND id(company)=$company "

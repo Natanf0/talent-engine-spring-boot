@@ -20,11 +20,22 @@ public final class CrudDtos {
                                 String linkedinURL, String personalWebsiteURL, ResumeDetails resume) {}
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record VacancyView(Long id, String role, String city, SENIORITY seniority, Modalidade modalidade,
+                              String additionalInfo,
                               List<VacancySkillRequirement> skillRequirements,
                               VacancyExperienceRequirement experienceRequirement,
                               List<VacancyLanguageRequirement> languageRequirements,
                               List<VacancyUndergraduateRequirement> undergraduateRequirements,
-                              List<VacancyGraduateRequirement> graduateRequirements) {}
+                              List<VacancyGraduateRequirement> graduateRequirements) {
+        public VacancyView(Long id, String role, String city, SENIORITY seniority, Modalidade modalidade,
+                           List<VacancySkillRequirement> skillRequirements,
+                           VacancyExperienceRequirement experienceRequirement,
+                           List<VacancyLanguageRequirement> languageRequirements,
+                           List<VacancyUndergraduateRequirement> undergraduateRequirements,
+                           List<VacancyGraduateRequirement> graduateRequirements) {
+            this(id, role, city, seniority, modalidade, null, skillRequirements, experienceRequirement,
+                    languageRequirements, undergraduateRequirements, graduateRequirements);
+        }
+    }
     public record PageView<T>(List<T> content, int page, int size, long totalElements, long totalPages) {
         public PageView { content = List.copyOf(content); }
     }
