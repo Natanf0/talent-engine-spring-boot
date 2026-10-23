@@ -10,6 +10,10 @@
 !/deploy/
 !/.github/
 
+!/docs/
+/docs/*
+!/docs/candidatura-publica.md
+
 !/.mvn/
 /.mvn/*
 !/.mvn/wrapper/

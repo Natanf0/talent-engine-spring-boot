@@ -38,6 +38,12 @@ public final class GraphSchema {
         return new Edge(field, relation, target, many, wrapper, List.of(field("required", Type.BOOLEAN, false, 0)));
     }
     public static boolean catalog(Kind kind) { return kind == Kind.SKILL || kind == Kind.LANGUAGE; }
+    /** Experience skills belong to candidates; vacancies declare skills through NEEDS_SKILL. */
+    public static Node node(Kind kind, Kind aggregate) {
+        Node schema = node(kind);
+        return kind == Kind.EXPERIENCE && aggregate == Kind.VACANCY
+                ? new Node(kind, schema.fields(), List.of()) : schema;
+    }
     public static Node node(Kind kind) {
         return switch (kind) {
             case CANDIDATE -> new Node(kind, List.of(text("name", true), field("about", Type.HTML, false, 5000),
@@ -45,6 +51,7 @@ public final class GraphSchema {
                     field("linkedinURL", Type.URL, false, 2048),
                     field("personalWebsiteURL", Type.URL, false, 2048)), List.of(edge("resume", "HAS", Kind.RESUME, false)));
             case VACANCY -> new Node(kind, List.of(text("role", true), field("city", Type.TEXT, true, 100),
+                    field("additionalInfo", Type.HTML, false, 1500),
                     enumeration("seniority", true, SENIORITY.class), enumeration("modalidade", true, Modalidade.class)),
                     List.of(weighted("skillRequirements", "NEEDS_SKILL", true), language(true),
                             requirement("experienceRequirement", "NEEDS_EXPERIENCE", Kind.EXPERIENCE, "experience", false),

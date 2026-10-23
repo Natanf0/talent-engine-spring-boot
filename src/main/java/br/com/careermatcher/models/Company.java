@@ -15,7 +15,7 @@ import java.util.List;
 @NoArgsConstructor
 public class Company {
     @Id @GeneratedValue Long id;
-    private String name, cnpj;
+    private String name, cnpj, about;
 
     @Relationship(type = "PUBLISHES", direction = Relationship.Direction.OUTGOING)
     @Setter private List<Vacancy> vacancies;

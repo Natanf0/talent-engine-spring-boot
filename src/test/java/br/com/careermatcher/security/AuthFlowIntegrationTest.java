@@ -373,6 +373,180 @@ class AuthFlowIntegrationTest {
         assertThat(count("MATCH (e:MATCHING_EXECUTION) RETURN count(e) AS total")).isZero();
     }
 
+    @Test void applyingToPublicVacancyRegistersSalaryAndAddsCandidateToPublishingCompanyOnly() throws Exception {
+        var user = registerCandidate("applicant@example.com");
+        String jwt = login("applicant@example.com");
+        long vacancy = publishedVacancy(companyA);
+        String path = "/api/me/vacancies/" + vacancy + "/applications";
+        mvc.perform(get("/api/careermatcher/vagas/" + vacancy)).andExpect(status().isOk());
+        assertThat(count("MATCH ()-[r:`INTERESTED IN`]->() RETURN count(r) AS total")).isZero();
+
+        for (double income : List.of(5500.75, 6200.50)) {
+            mvc.perform(post(path).header("Authorization", "Bearer " + jwt).contentType(MediaType.APPLICATION_JSON)
+                            .content(mapper.writeValueAsString(Map.of("income", income))))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.vacancyId").value(vacancy))
+                    .andExpect(jsonPath("$.companyId").value(companyA))
+                    .andExpect(jsonPath("$.companyName").value("A"))
+                    .andExpect(jsonPath("$.income").value(income))
+                    .andExpect(jsonPath("$.message").value("Parabéns, sua candidatura foi enviada com sucesso a A."));
+        }
+        var rows = client.query("""
+                MATCH (c:CANDIDATE)-[r:`APPLIED TO`]->(v:VACANCY)
+                RETURN id(c) AS candidate, id(v) AS vacancy, r.income AS income
+                """).fetch().all();
+        assertThat(rows).containsExactly(Map.of("candidate", user.path("candidateId").asLong(),
+                "vacancy", vacancy, "income", 6200.50));
+        assertThat(count("MATCH ()-[r:`INTERESTED IN`]->() RETURN count(r) AS total")).isEqualTo(1);
+        mvc.perform(get("/api/careermatcher/candidatos/page").header("Authorization", "Bearer " + login("admin-a@example.com")))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.content[0].id").value(user.path("candidateId").asLong()));
+        mvc.perform(get("/api/careermatcher/candidatos/page").header("Authorization", "Bearer " + login("admin-b@example.com")))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.totalElements").value(0));
+
+        long secondVacancy = publishedVacancy(companyA);
+        mvc.perform(post("/api/me/vacancies/" + secondVacancy + "/applications").header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"income\":7000}"))
+                .andExpect(status().isOk());
+        assertThat(count("MATCH ()-[r:`APPLIED TO`]->() RETURN count(r) AS total")).isEqualTo(2);
+        assertThat(count("MATCH ()-[r:`INTERESTED IN`]->() RETURN count(r) AS total")).isEqualTo(1);
+    }
+
+    @Test void applicationRequiresValidSalaryAndPublishedVacancyWithoutPartialWrites() throws Exception {
+        registerCandidate("salary@example.com");
+        String jwt = login("salary@example.com");
+        long vacancy = publishedVacancy(companyA);
+        String path = "/api/me/vacancies/" + vacancy + "/applications";
+        for (String payload : List.of("{}", "{\"income\":null}", "{\"income\":0}", "{\"income\":-1}",
+                "{\"income\":12.345}", "{\"income\":1e309}", "{\"income\":\"NaN\"}", "{\"income\":\"abc\"}",
+                "{\"income\":\"5.000,00\"}", "{\"income\":true}")) {
+            mvc.perform(post(path).header("Authorization", "Bearer " + jwt)
+                            .contentType(MediaType.APPLICATION_JSON).content(payload))
+                    .andExpect(status().isBadRequest());
+        }
+        long unpublished = client.query("CREATE (v:VACANCY {role:'Unpublished'}) RETURN id(v) AS id")
+                .fetchAs(Long.class).mappedBy((t, r) -> r.get("id").asLong()).one().orElseThrow();
+        for (long id : List.of(unpublished, Long.MAX_VALUE)) {
+            mvc.perform(post("/api/me/vacancies/" + id + "/applications").header("Authorization", "Bearer " + jwt)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"income\":5000}"))
+                    .andExpect(status().isNotFound());
+        }
+        assertThat(count("MATCH ()-[r:`APPLIED TO`]->() RETURN count(r) AS total")).isZero();
+        assertThat(count("MATCH ()-[r:`INTERESTED IN`]->() RETURN count(r) AS total")).isZero();
+    }
+
+    @Test void applicationRequiresActiveCandidateSessionAndSupportsFrontendPreflight() throws Exception {
+        registerCandidate("session@example.com");
+        String jwt = login("session@example.com");
+        long vacancy = publishedVacancy(companyA);
+        String path = "/api/me/vacancies/" + vacancy + "/applications";
+        mvc.perform(options(path).header(HttpHeaders.ORIGIN, FRONTEND_ORIGIN)
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "Authorization, Content-Type"))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, FRONTEND_ORIGIN));
+        mvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).content("{\"income\":5000}"))
+                .andExpect(status().isUnauthorized());
+        for (String address : List.of("admin-a@example.com", "manager@example.com", "recruiter@example.com")) {
+            mvc.perform(post(path).header("Authorization", "Bearer " + login(address))
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"income\":5000}"))
+                    .andExpect(status().isForbidden());
+        }
+        when(clock.instant()).thenReturn(NOW.plusSeconds(3601));
+        mvc.perform(post(path).header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"income\":5000}"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/careermatcher/vagas/" + vacancy).header("Authorization", "Bearer " + jwt))
+                .andExpect(status().isOk());
+        assertThat(count("MATCH ()-[r:`APPLIED TO`]->() RETURN count(r) AS total")).isZero();
+        assertThat(count("MATCH ()-[r:`INTERESTED IN`]->() RETURN count(r) AS total")).isZero();
+    }
+
+    @Test void concurrentApplicationsReuseExistingInterestAndCannotTargetAnotherCandidateOrCompany() throws Exception {
+        var first = registerCandidate("apply-first@example.com");
+        var second = registerCandidate("apply-second@example.com");
+        String jwt = login("apply-first@example.com");
+        long vacancy = publishedVacancy(companyA);
+        mvc.perform(put("/api/me/companies/" + companyA + "/interest").header("Authorization", "Bearer " + jwt))
+                .andExpect(status().isNoContent());
+        try (var pool = Executors.newFixedThreadPool(4)) {
+            Callable<Integer> apply = () -> mvc.perform(post("/api/me/vacancies/" + vacancy + "/applications")
+                            .header("Authorization", "Bearer " + jwt)
+                            .param("candidateId", second.path("candidateId").asText()).param("companyId", Long.toString(companyB))
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"income\":5500.75}"))
+                    .andReturn().getResponse().getStatus();
+            for (var result : pool.invokeAll(List.of(apply, apply, apply, apply))) assertThat(result.get()).isEqualTo(200);
+        }
+        assertThat(client.query("MATCH (c:CANDIDATE)-[r:`APPLIED TO`]->() RETURN id(c) AS candidate, count(r) AS total")
+                .fetch().all()).containsExactly(Map.of("candidate", first.path("candidateId").asLong(), "total", 1L));
+        assertThat(client.query("MATCH (c:CANDIDATE)-[r:`INTERESTED IN`]->(company) RETURN id(c) AS candidate, id(company) AS company, count(r) AS total")
+                .fetch().all()).containsExactly(Map.of("candidate", first.path("candidateId").asLong(), "company", companyA, "total", 1L));
+    }
+
+    @Test void applicationStatusUsesOnlyCurrentCandidateAndSelectedVacancyWithoutChangingGraph() throws Exception {
+        var first = registerCandidate("status-first@example.com");
+        String jwt = login("status-first@example.com");
+        long vacancy = publishedVacancy(companyA);
+        long otherVacancy = publishedVacancy(companyA);
+        String path = "/api/me/vacancies/" + vacancy + "/application-status";
+        mvc.perform(get(path).header("Authorization", "Bearer " + jwt))
+                .andExpect(status().isOk()).andExpect(content().json("{\"applied\":false}"));
+        mvc.perform(put("/api/me/companies/" + companyA + "/interest").header("Authorization", "Bearer " + jwt))
+                .andExpect(status().isNoContent());
+        mvc.perform(get(path).header("Authorization", "Bearer " + jwt))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.applied").value(false));
+        assertThat(count("MATCH ()-[r:`APPLIED TO`]->() RETURN count(r) AS total")).isZero();
+        mvc.perform(post("/api/me/vacancies/" + vacancy + "/applications").header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"income\":5500.75}"))
+                .andExpect(status().isOk());
+        mvc.perform(get(path).header("Authorization", "Bearer " + jwt))
+                .andExpect(status().isOk()).andExpect(content().json("{\"applied\":true}"));
+        mvc.perform(get("/api/me/vacancies/" + otherVacancy + "/application-status")
+                        .header("Authorization", "Bearer " + jwt))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.applied").value(false));
+
+        registerCandidate("status-second@example.com");
+        String secondJwt = login("status-second@example.com");
+        mvc.perform(get(path).header("Authorization", "Bearer " + secondJwt)
+                        .param("candidateId", first.path("candidateId").asText()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.applied").value(false));
+        // Membership can be removed independently; the existing application still counts.
+        mvc.perform(delete("/api/me/companies/" + companyA + "/interest").header("Authorization", "Bearer " + jwt))
+                .andExpect(status().isNoContent());
+        mvc.perform(get(path).header("Authorization", "Bearer " + jwt))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.applied").value(true));
+        assertThat(count("MATCH ()-[r:`APPLIED TO`]->() RETURN count(r) AS total")).isEqualTo(1);
+        assertThat(count("MATCH ()-[r:`INTERESTED IN`]->() RETURN count(r) AS total")).isZero();
+    }
+
+    @Test void applicationStatusRequiresCandidateSessionAndPublishedVacancy() throws Exception {
+        registerCandidate("status-access@example.com");
+        String jwt = login("status-access@example.com");
+        long vacancy = publishedVacancy(companyA);
+        String path = "/api/me/vacancies/" + vacancy + "/application-status";
+        mvc.perform(get(path)).andExpect(status().isUnauthorized());
+        for (String address : List.of("admin-a@example.com", "manager@example.com", "recruiter@example.com"))
+            mvc.perform(get(path).header("Authorization", "Bearer " + login(address)))
+                    .andExpect(status().isForbidden());
+        long unpublished = client.query("CREATE (v:VACANCY) RETURN id(v) AS id")
+                .fetchAs(Long.class).mappedBy((t, r) -> r.get("id").asLong()).one().orElseThrow();
+        for (long id : List.of(unpublished, Long.MAX_VALUE))
+            mvc.perform(get("/api/me/vacancies/" + id + "/application-status").header("Authorization", "Bearer " + jwt))
+                    .andExpect(status().isNotFound());
+        when(clock.instant()).thenReturn(NOW.plusSeconds(3601));
+        mvc.perform(get(path).header("Authorization", "Bearer " + jwt)).andExpect(status().isUnauthorized());
+        assertThat(count("MATCH ()-[r:`APPLIED TO`]->() RETURN count(r) AS total")).isZero();
+        assertThat(count("MATCH ()-[r:`INTERESTED IN`]->() RETURN count(r) AS total")).isZero();
+    }
+
+    private long publishedVacancy(long companyId) {
+        return client.query("""
+                MATCH (company:COMPANY) WHERE id(company)=$companyId
+                CREATE (company)-[:PUBLISHES]->(v:VACANCY {role:'Developer', city:'Recife', seniority:'PLENO', modalidade:'REMOTO'})
+                RETURN id(v) AS id
+                """).bind(companyId).to("companyId").fetchAs(Long.class)
+                .mappedBy((t, r) -> r.get("id").asLong()).one().orElseThrow();
+    }
+
     private JsonNode registerCandidate(String email) throws Exception {
         return body(mvc.perform(post("/api/auth/register/candidate").contentType(MediaType.APPLICATION_JSON)
                 .content(mapper.writeValueAsString(Map.of("name","Ana", "professionalTitle","Developer", "email",email,"password",PASSWORD))))

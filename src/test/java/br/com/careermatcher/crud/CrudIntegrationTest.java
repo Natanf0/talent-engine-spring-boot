@@ -49,7 +49,8 @@ class CrudIntegrationTest {
             client.query("CREATE CONSTRAINT crud_" + label.toLowerCase(Locale.ROOT)
                     + "_normalized IF NOT EXISTS FOR (n:" + label + ") REQUIRE n.normalizedName IS UNIQUE").run();
         }
-        mvc = MockMvcBuilders.standaloneSetup(new CandidatoController(candidates), new VagaController(vacancies))
+        mvc = MockMvcBuilders.standaloneSetup(new CandidatoController(candidates), new VagaController(vacancies),
+                new CompanyController(context.getBean(CompanyService.class)))
                 .setControllerAdvice(new CrudExceptionHandler()).build();
     }
     @AfterAll void stop() { if (context != null) context.close(); if (database != null) database.close(); }
@@ -63,7 +64,8 @@ class CrudIntegrationTest {
 
     @Configuration @EnableTransactionManagement
     @Import({GraphCrudRepository.class, CatalogRepository.class, TextSanitizer.class, GraphValidations.class,
-            CandidatoValidations.class, VagaValidations.class, CandidatoService.class, VagaService.class})
+            CandidatoValidations.class, VagaValidations.class, CandidatoService.class, VagaService.class,
+            CompanyService.class})
     static class Config extends AbstractNeo4jConfig {
         @Bean @Override public Driver driver() { return GraphDatabase.driver(database.boltURI(), AuthTokens.none()); }
         @Override protected Collection<String> getMappingBasePackages() { return List.of("br.com.careermatcher.models"); }
@@ -285,6 +287,57 @@ class CrudIntegrationTest {
         assertThat(count("MATCH (n:SKILL) RETURN count(n) AS count")).isEqualTo(2);
     }
 
+    @Test void omitsLegacyVacancyExperienceSkillsWhilePreservingCandidateSkills() throws Exception {
+        var candidate = registerInterested(fixture("candidate"));
+        var vacancy = vacancies.create(fixture("vacancy"));
+        long experienceId = Long.parseLong(candidate.resume().experiences().getFirst().id());
+        client.query("""
+                MATCH (v:VACANCY)-[r:NEEDS_EXPERIENCE]->(), (e:EXPERIENCE)
+                WHERE id(v)=$vacancy AND id(e)=$experience
+                DELETE r CREATE (v)-[:NEEDS_EXPERIENCE {required:true}]->(e)
+                """).bindAll(Map.of("vacancy", vacancy.id(), "experience", experienceId)).run();
+
+        mvc.perform(get("/api/careermatcher/vagas/" + vacancy.id()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.experienceRequirement.experience.skills").doesNotExist())
+                .andExpect(jsonPath("$.skillRequirements[0].skill.name").exists());
+        mvc.perform(get("/api/careermatcher/vagas"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].experienceRequirement.experience.skills").doesNotExist());
+        var graph = context.getBean(GraphCrudRepository.class);
+        var single = graph.find(GraphSchema.Kind.VACANCY, vacancy.id());
+        var batch = graph.findByIds(GraphSchema.Kind.VACANCY, List.of(vacancy.id()), 10).getFirst();
+        assertThat(batch).isEqualTo(single);
+        assertThat(batch.path("experienceRequirement").path("experience").has("skills")).isFalse();
+
+        mvc.perform(patch("/api/careermatcher/vagas/" + vacancy.id()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"experienceRequirement\":{\"experience\":{\"durationMonths\":36}}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.experienceRequirement.experience.durationMonths").value(36))
+                .andExpect(jsonPath("$.experienceRequirement.experience.skills").doesNotExist())
+                .andExpect(jsonPath("$.skillRequirements[0].skill.name").exists());
+        assertThat(candidates.findCandidate(candidate.id()).resume().experiences().getFirst().skills())
+                .isEqualTo(candidate.resume().experiences().getFirst().skills());
+        assertThat(candidates.findCandidate(candidate.id()).resume().experiences().getFirst().durationMonths())
+                .isEqualTo(24);
+        assertThat(count("MATCH (:VACANCY)-[:NEEDS_EXPERIENCE]->(:EXPERIENCE)-[:DEVELOPS_SKILL]->() RETURN count(*) AS count"))
+                .isZero();
+    }
+
+    @Test void rejectsVacancyExperienceSkillsThroughHttpOnCreateAndPatch() throws Exception {
+        ObjectNode input = fixture("vacancy");
+        ((ObjectNode) input.path("experienceRequirement").path("experience"))
+                .set("skills", mapper.readTree("[{\"weight\":1,\"skill\":{\"name\":\"Java\"}}]"));
+        mvc.perform(post("/api/careermatcher/vagas").contentType(MediaType.APPLICATION_JSON).content(input.toString()))
+                .andExpect(status().isBadRequest());
+        assertThat(vacancies.findAll()).isEmpty();
+        var vacancy = vacancies.create(fixture("vacancy"));
+        mvc.perform(patch("/api/careermatcher/vagas/" + vacancy.id()).contentType(MediaType.APPLICATION_JSON)
+                        .content(input.toString()))
+                .andExpect(status().isBadRequest());
+        assertThat(vacancies.find(vacancy.id())).isEqualTo(vacancy);
+    }
+
     @Test void preservesSharedResumeAfterBothInterestsAreRemoved() throws Exception {
         var first = registerInterested(fixture("candidate"));
         var second = registerInterested(object("{\"name\":\"Bia\",\"professionalTitle\":\"Dev\"}"));
@@ -381,6 +434,28 @@ class CrudIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.city").value("Natal"));
         mvc.perform(delete("/api/careermatcher/vagas/" + vacancyId)).andExpect(status().isNoContent());
         mvc.perform(delete("/api/careermatcher/vagas/" + vacancyId)).andExpect(status().isNotFound());
+    }
+
+    @Test void managesCompanyAboutAndPublishesVacancyInformation() throws Exception {
+        mvc.perform(get("/api/admin/company"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("Test"))
+                .andExpect(jsonPath("$.about").doesNotExist());
+        mvc.perform(patch("/api/admin/company").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"about\":\"<p>Valores <strong>claros</strong><script>bad()</script></p>\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.about").value("<p>Valores <strong>claros</strong></p>"));
+
+        ObjectNode input = fixture("vacancy").put("additionalInfo", "<p>Benefícios e horário flexível.</p>");
+        var vacancy = vacancies.create(input);
+        mvc.perform(get("/api/careermatcher/vagas/" + vacancy.id()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.additionalInfo").value("<p>Benefícios e horário flexível.</p>"))
+                .andExpect(jsonPath("$.companyAbout").value("<p>Valores <strong>claros</strong></p>"));
+        mvc.perform(patch("/api/admin/company").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"about\":\"\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.about").doesNotExist());
     }
 
     @Test void staffCannotCreateOrUpdateCandidateEvenThroughRepository() throws Exception {

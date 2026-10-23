@@ -1,5 +1,6 @@
 package br.com.careermatcher.models;
 
+import br.com.careermatcher.relations.VacancyApplied;
 import lombok.*;
 import org.springframework.data.neo4j.core.schema.GeneratedValue;
 import org.springframework.data.neo4j.core.schema.Id;
@@ -25,5 +26,8 @@ public class Candidate {
 
     @Relationship(type = "INTERESTED IN", direction = Relationship.Direction.OUTGOING)
     @Setter private List<Company> companiesInterestedIn;
+
+    @Relationship(type = "APPLIED TO", direction = Relationship.Direction.OUTGOING)
+    @Setter private List<VacancyApplied> vacanciesAppliedTo;
 
 }
