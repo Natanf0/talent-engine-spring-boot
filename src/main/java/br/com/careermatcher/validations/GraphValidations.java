@@ -24,6 +24,105 @@ public class GraphValidations {
         return clean;
     }
 
+    /** Partial extraction is not a write payload: omissions must never delete data or invent defaults. */
+    public record Draft(ObjectNode data, List<FieldError> pendingFields, List<FieldError> warnings) {}
+    public Draft validateDraft(Kind kind, ObjectNode input) {
+        List<FieldError> pending = new ArrayList<>();
+        List<FieldError> warnings = new ArrayList<>();
+        ObjectNode data = draftNode(kind, input, "", pending, warnings);
+        return new Draft(data, List.copyOf(pending), List.copyOf(warnings));
+    }
+
+    private ObjectNode draftNode(Kind kind, ObjectNode input, String path, List<FieldError> pending, List<FieldError> warnings) {
+        Node schema = GraphSchema.node(kind);
+        ObjectNode output = JsonNodeFactory.instance.objectNode();
+        Set<String> allowed = new HashSet<>();
+        for (Field field : schema.fields()) {
+            allowed.add(field.name());
+            draftField(field, input.get(field.name()), output, join(path, field.name()), pending, warnings);
+        }
+        for (Edge edge : schema.edges()) {
+            allowed.add(edge.field());
+            JsonNode raw = input.get(edge.field());
+            if (raw == null || raw.isNull()) continue;
+            String edgePath = join(path, edge.field());
+            if (edge.many()) {
+                if (!raw.isArray() || raw.size() > 100) throw new IllegalArgumentException("Lista incompatível.");
+                ArrayNode items = JsonNodeFactory.instance.arrayNode();
+                Set<String> names = new HashSet<>();
+                for (JsonNode item : raw) {
+                    String itemPath = edgePath + "[" + items.size() + "]";
+                    // Compute pending paths only for entries retained in the draft.
+                    List<FieldError> itemPending = new ArrayList<>();
+                    ObjectNode clean = draftEdge(edge, item, itemPath, itemPending, warnings);
+                    if (clean.isEmpty()) continue;
+                    if (GraphSchema.catalog(edge.target())) {
+                        String name = clean.path(edge.wrapper()).path("name").asText("");
+                        if (name.isBlank()) continue;
+                        if (!names.add(TextSanitizer.normalizeName(name))) {
+                            error(warnings, edgePath, "Item repetido removido após normalização.");
+                            continue;
+                        }
+                    }
+                    items.add(clean);
+                    pending.addAll(itemPending);
+                }
+                if (!items.isEmpty()) output.set(edge.field(), items);
+            } else {
+                List<FieldError> itemPending = new ArrayList<>();
+                ObjectNode clean = draftEdge(edge, raw, edgePath, itemPending, warnings);
+                if (!clean.isEmpty()) { output.set(edge.field(), clean); pending.addAll(itemPending); }
+            }
+        }
+        unknownDraftFields(input, allowed, path, warnings);
+        if (kind == Kind.PROJECT && output.hasNonNull("startDate") && output.hasNonNull("endDate")
+                && Instant.parse(output.path("endDate").asText()).isBefore(Instant.parse(output.path("startDate").asText()))) {
+            output.remove("endDate");
+            error(warnings, join(path, "endDate"), "Término anterior ao início foi descartado.");
+        }
+        return output;
+    }
+
+    private ObjectNode draftEdge(Edge edge, JsonNode raw, String path, List<FieldError> pending, List<FieldError> warnings) {
+        if (!raw.isObject()) throw new IllegalArgumentException("Objeto incompatível.");
+        if (edge.wrapper() == null) return draftNode(edge.target(), (ObjectNode) raw, path, pending, warnings);
+        JsonNode target = raw.get(edge.wrapper());
+        if (target == null || !target.isObject()) throw new IllegalArgumentException("Wrapper incompatível.");
+        ObjectNode clean = draftNode(edge.target(), (ObjectNode) target, join(path, edge.wrapper()), pending, warnings);
+        ObjectNode result = JsonNodeFactory.instance.objectNode();
+        if (clean.isEmpty()) return result;
+        result.set(edge.wrapper(), clean);
+        Set<String> allowed = new HashSet<>(Set.of(edge.wrapper()));
+        for (Field attribute : edge.attributes()) {
+            allowed.add(attribute.name());
+            draftField(attribute, raw.get(attribute.name()), result, join(path, attribute.name()), pending, warnings);
+        }
+        unknownDraftFields((ObjectNode) raw, allowed, path, warnings);
+        return result;
+    }
+
+    private void draftField(Field field, JsonNode raw, ObjectNode out, String path, List<FieldError> pending, List<FieldError> warnings) {
+        Field optional = new Field(field.name(), field.type(), false, field.limit(), field.values());
+        int before = warnings.size();
+        validateField(optional, raw, out, path, warnings);
+        // The current form supports these narrower ranges; do not return an unselectable suggestion.
+        JsonNode value = out.get(field.name());
+        if (value != null && ((field.name().equals("weight") && (value.doubleValue() < 1 || value.doubleValue() > 10
+                        || value.doubleValue() != Math.rint(value.doubleValue())))
+                || (field.name().equals("level") && !Set.of(1.0, 3.0, 6.0, 9.0).contains(value.doubleValue())))) {
+            error(warnings, path, "Valor fora das opções do formulário foi descartado.");
+        }
+        if (warnings.size() > before) out.remove(field.name());
+        else if (field.name().equals("weight") && value != null) out.put(field.name(), value.intValue());
+        if (field.required() && !out.has(field.name())) error(pending, path, "Preencha este campo antes de salvar.");
+    }
+
+    private void unknownDraftFields(ObjectNode input, Set<String> allowed, String path, List<FieldError> warnings) {
+        input.fieldNames().forEachRemaining(name -> {
+            if (!allowed.contains(name)) error(warnings, join(path, name), "Campo desconhecido ou não editável foi descartado.");
+        });
+    }
+
     /** RFC 7396-like object merge; arrays replace wholesale. Null is retained for required-field validation. */
     public ObjectNode merge(ObjectNode current, ObjectNode patch) {
         if (patch == null) throw new ValidationException(List.of(new FieldError("body", "Objeto JSON obrigatório.")));

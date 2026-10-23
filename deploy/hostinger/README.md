@@ -323,3 +323,80 @@ Mantenha backup protegido, fora da VPS, de `secrets/`, `.env`, Compose, Dockerfi
 - A fila de matching é local e não durável: reiniciar um container pode perder trabalhos aceitos. O desligamento gracioso tem prazo limitado e não substitui aguardar a conclusão das tarefas.
 - O Spring espera até 60 segundos pela resposta de leitura do FastAPI; o Nginx está configurado com 110 segundos. A Cloudflare tem limite padrão de leitura de [125 segundos](https://developers.cloudflare.com/fundamentals/reference/connection-limits/). Aumentar só o timeout do Nginx não resolve relatórios que ultrapassem o limite do Spring; esses casos precisam de ajuste na aplicação ou geração assíncrona.
 - Duas instâncias distribuem carga e permitem alguma tolerância a falhas de processo. A VPS e o único FastAPI continuam sendo pontos únicos de falha.
+
+
+## Preenchimento assistido com PDFBox e DeepSeek
+
+Para candidatos, o recurso extrai texto de currículos PDF com PDFBox localmente e envia somente o texto ao DeepSeek. Para vagas, recebe exclusivamente a descrição colada em texto.
+A resposta contém sugestões; nenhuma entidade é alterada antes de o usuário revisar e salvar.
+O frontend oferece upload de currículo PDF no perfil do próprio candidato. Nos formulários de criação e edição de vagas, recrutadores, gerentes e administradores colam a descrição diretamente no campo visível; não há upload de arquivo nesse fluxo.
+Nesta atualização, publique primeiro o frontend usando apenas texto para vagas e depois o backend que rejeita arquivos nesse endpoint. O envio de texto usa o contrato multipart já disponível.
+
+### Ativar e obter a chave
+
+1. Acesse https://platform.deepseek.com/ e crie ou entre na sua conta.
+2. Em **API Keys**, gere uma chave para este backend e configure saldo/faturamento da API.
+3. No arquivo `/opt/talentengine/secrets/spring.env`, mantenha a chave fora do Git e adicione:
+
+   ```dotenv
+   AI_EXTRACTION_ENABLED=true
+   DEEPSEEK_API_KEY=SUBSTITUA_PELA_CHAVE_REAL
+   DEEPSEEK_MODEL=deepseek-flash
+   ```
+
+4. Publique primeiro o frontend que usa somente texto para o preenchimento de vagas.
+5. Publique a imagem atualizada do Spring e recrie os containers seguindo o procedimento
+   de release deste documento. O Compose já lê `secrets/spring.env`; não é preciso colocar
+   a chave na imagem, no frontend ou em argumentos de build. A inicialização falha se o
+   recurso estiver habilitado sem chave.
+6. Instale o `nginx.conf` atualizado, valide com `sudo nginx -t` e recarregue o Nginx.
+7. Faça um preenchimento pequeno em cada fluxo com contas de teste.
+
+Documentação do provedor: https://api-docs.deepseek.com/ e
+https://api-docs.deepseek.com/guides/json_mode/ . A chamada usa `/chat/completions`, JSON,
+sem streaming, sem raciocínio adicional e sem novas tentativas automáticas.
+
+### Contrato HTTP
+
+Ambos os endpoints exigem Bearer token da aplicação; a chave DeepSeek nunca vem do navegador.
+
+| Endpoint POST | Perfil | Multipart |
+| --- | --- | --- |
+| `/api/me/candidate/ai-extraction` | Candidato autenticado | `file`: um PDF |
+| `/api/careermatcher/vagas/ai-extraction` | Administrador, gerente ou recrutador com empresa | `text`: descrição da vaga, obrigatória e não vazia; arquivos são rejeitados com 400 |
+
+Resposta: `{"data":{...},"pendingFields":[{"field":"resume.skills[0].weight","message":"..."}],"warnings":[]}`.
+`data` é parcial e usa os mesmos campos editáveis do cadastro, sem IDs, email ou credenciais.
+Listas, objetos vazios e valores ausentes não são sugestões de exclusão.
+Os enums e limites vêm de `GraphSchema`; campos inválidos são descartados com aviso e os
+obrigatórios ausentes ficam pendentes. O formulário continua exigindo a validação completa ao salvar.
+Nenhum peso é estimado. Os rascunhos aceitam apenas pesos inteiros de 1 a 10, compatíveis com a combobox; pesos zero, decimais ou fora da faixa são descartados para preenchimento manual, sem arredondamento. Essa restrição de extração não altera as regras de persistência dos clientes existentes. Níveis declarados de idioma usam as opções do formulário: 1, 3, 6 e 9.
+A graduação é singular no modelo atual; múltiplas formações desse tipo exigem revisão.
+
+Erros: `400` entrada inválida, descrição de vaga ausente/vazia ou arquivo enviado ao endpoint de vagas; `401/403` autenticação/permissão; `413` tamanho ou texto
+excessivo; `415` conteúdo sem assinatura PDF; `422` PDF protegido/corrompido/sem texto ou com
+páginas demais; `429` limite de uso; `502` falha/resposta inválida do provedor; `503` recurso
+desabilitado; `504` timeout. A resposta da API externa nunca é repassada ao navegador.
+
+### Limites e operação
+
+Os padrões são 5 MiB por PDF, 6 MiB por requisição multipart, 20 páginas, 60.000 caracteres
+extraídos/colados e 2 solicitações simultâneas por JVM (até 4 nas duas réplicas atuais).
+O Nginx limita os endpoints a 10 solicitações/minuto por IP, com burst de 2, antes do upstream.
+Não há fila de importações; concorrência excedente retorna 429. Não é um scanner antivírus:
+tamanho, páginas, saída e concorrência limitados reduzem consumo, mas não garantem a inocuidade
+de um PDF. PDFs escaneados não têm OCR nesta versão; use texto selecionável ou preenchimento manual.
+A extração de duas colunas pode exigir revisão da ordem de leitura.
+
+As variáveis disponíveis constam em `spring.env.example`. Se alterar o tamanho permitido,
+alinhe também `SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE`,
+`SPRING_SERVLET_MULTIPART_MAX_REQUEST_SIZE`, o limite do Nginx e a mensagem/validação do frontend.
+Conexão e leitura do provedor usam 5s e 60s; a saída é limitada a 8192 tokens. A extração local
+não tem um timeout com isolamento de processo. Limites rígidos contra consumo de CPU/memória
+continuam sendo os do container. Não aumente os limites sem avaliar esse consumo.
+
+Arquivos temporários do multipart são limpos ao encerrar a requisição. Não há armazenamento
+de PDF, texto ou respostas de IA em Neo4j/R2, nem logs do conteúdo. Logs `ai_extraction_usage`
+e `ai_extraction` registram somente tokens, resultado, tipo e duração. Monitore erros, latência,
+429 e consumo no painel do DeepSeek. Desative com `AI_EXTRACTION_ENABLED=false` e recrie os
+containers; os cadastros existentes continuam usando o fluxo normal. Não há migração de banco.
