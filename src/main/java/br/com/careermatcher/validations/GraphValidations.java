@@ -19,7 +19,7 @@ public class GraphValidations {
     public ObjectNode validate(Kind kind, ObjectNode input) {
         List<FieldError> errors = new ArrayList<>();
         if (input == null) throw new ValidationException(List.of(new FieldError("body", "Objeto JSON obrigatório.")));
-        ObjectNode clean = validateNode(kind, input, "", errors);
+        ObjectNode clean = validateNode(kind, kind, input, "", errors);
         if (!errors.isEmpty()) throw new ValidationException(errors);
         return clean;
     }
@@ -146,8 +146,8 @@ public class GraphValidations {
         if (node.isContainerNode()) node.forEach(this::removeIds);
     }
 
-    private ObjectNode validateNode(Kind kind, ObjectNode input, String path, List<FieldError> errors) {
-        Node schema = GraphSchema.node(kind);
+    private ObjectNode validateNode(Kind kind, Kind aggregate, ObjectNode input, String path, List<FieldError> errors) {
+        Node schema = GraphSchema.node(kind, aggregate);
         ObjectNode output = JsonNodeFactory.instance.objectNode();
         Set<String> allowed = new HashSet<>();
         for (Field field : schema.fields()) {
@@ -167,14 +167,14 @@ public class GraphValidations {
                 ArrayNode items = output.putArray(edge.field());
                 Set<String> names = new HashSet<>();
                 for (int i = 0; i < raw.size(); i++) {
-                    ObjectNode item = validateEdge(edge, raw.get(i), edgePath + "[" + i + "]", errors);
+                    ObjectNode item = validateEdge(edge, aggregate, raw.get(i), edgePath + "[" + i + "]", errors);
                     items.add(item);
                     if (GraphSchema.catalog(edge.target())) {
                         String key = TextSanitizer.normalizeName(item.path(edge.wrapper()).path("name").asText());
                         if (!names.add(key)) error(errors, edgePath + "[" + i + "]", "Nome repetido após normalização.");
                     }
                 }
-            } else output.set(edge.field(), validateEdge(edge, raw, edgePath, errors));
+            } else output.set(edge.field(), validateEdge(edge, aggregate, raw, edgePath, errors));
         }
         input.fieldNames().forEachRemaining(name -> {
             if (!allowed.contains(name)) error(errors, join(path, name), "Campo desconhecido ou não editável.");
@@ -186,9 +186,9 @@ public class GraphValidations {
         return output;
     }
 
-    private ObjectNode validateEdge(Edge edge, JsonNode raw, String path, List<FieldError> errors) {
+    private ObjectNode validateEdge(Edge edge, Kind aggregate, JsonNode raw, String path, List<FieldError> errors) {
         if (!raw.isObject()) { error(errors, path, "Objeto obrigatório."); return JsonNodeFactory.instance.objectNode(); }
-        if (edge.wrapper() == null) return validateNode(edge.target(), (ObjectNode) raw, path, errors);
+        if (edge.wrapper() == null) return validateNode(edge.target(), aggregate, (ObjectNode) raw, path, errors);
         ObjectNode result = JsonNodeFactory.instance.objectNode();
         Set<String> allowed = new HashSet<>(Set.of(edge.wrapper()));
         for (Field field : edge.attributes()) {
@@ -198,7 +198,7 @@ public class GraphValidations {
         }
         JsonNode target = raw.get(edge.wrapper());
         if (target == null || !target.isObject()) error(errors, join(path, edge.wrapper()), "Objeto obrigatório.");
-        else result.set(edge.wrapper(), validateNode(edge.target(), (ObjectNode) target, join(path, edge.wrapper()), errors));
+        else result.set(edge.wrapper(), validateNode(edge.target(), aggregate, (ObjectNode) target, join(path, edge.wrapper()), errors));
         raw.fieldNames().forEachRemaining(name -> {
             if (!allowed.contains(name)) error(errors, join(path, name), "Campo desconhecido ou não editável.");
         });

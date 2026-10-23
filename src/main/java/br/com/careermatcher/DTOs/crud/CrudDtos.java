@@ -25,7 +25,8 @@ public final class CrudDtos {
                               VacancyExperienceRequirement experienceRequirement,
                               List<VacancyLanguageRequirement> languageRequirements,
                               List<VacancyUndergraduateRequirement> undergraduateRequirements,
-                              List<VacancyGraduateRequirement> graduateRequirements) {
+                              List<VacancyGraduateRequirement> graduateRequirements,
+                              String companyAbout) {
         public VacancyView(Long id, String role, String city, SENIORITY seniority, Modalidade modalidade,
                            List<VacancySkillRequirement> skillRequirements,
                            VacancyExperienceRequirement experienceRequirement,
@@ -33,7 +34,7 @@ public final class CrudDtos {
                            List<VacancyUndergraduateRequirement> undergraduateRequirements,
                            List<VacancyGraduateRequirement> graduateRequirements) {
             this(id, role, city, seniority, modalidade, null, skillRequirements, experienceRequirement,
-                    languageRequirements, undergraduateRequirements, graduateRequirements);
+                    languageRequirements, undergraduateRequirements, graduateRequirements, null);
         }
     }
     public record PageView<T>(List<T> content, int page, int size, long totalElements, long totalPages) {

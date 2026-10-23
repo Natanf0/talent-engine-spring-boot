@@ -125,7 +125,10 @@ public class MatchingResponseMapper {
         if (relationship == null) {
             return null;
         }
-        return new VacancyExperienceRequirement(relationship.getRequired(), mapExperience(relationship.getExperience()));
+        Experience experience = relationship.getExperience();
+        return new VacancyExperienceRequirement(relationship.getRequired(), experience == null ? null
+                : new VacancyExperienceDetails(id(experience.getId()), experience.getRole(), experience.getCompanyName(),
+                experience.getDescription(), experience.getDurationMonths(), experience.getSeniority()));
     }
 
     private VacancyLanguageRequirement mapVacancyLanguage(VacancyLanguage relationship) {

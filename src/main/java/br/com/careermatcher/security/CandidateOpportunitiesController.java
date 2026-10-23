@@ -2,10 +2,15 @@ package br.com.careermatcher.security;
 
 import br.com.careermatcher.DTOs.crud.CrudDtos.PageView;
 import br.com.careermatcher.DTOs.crud.CrudDtos.VacancySummary;
+import br.com.careermatcher.DTOs.VacancyApplicationDtos.ApplicationRequest;
+import br.com.careermatcher.DTOs.VacancyApplicationDtos.ApplicationResponse;
+import br.com.careermatcher.DTOs.VacancyApplicationDtos.ApplicationStatus;
 import br.com.careermatcher.repositories.CompanyInterestRepository;
+import br.com.careermatcher.repositories.VacancyApplicationRepository;
 import br.com.careermatcher.repositories.CompanyInterestRepository.PartnerCompany;
 import br.com.careermatcher.services.VagaService;
 import lombok.RequiredArgsConstructor;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
@@ -16,6 +21,17 @@ public class CandidateOpportunitiesController {
     private final CurrentActor actor;
     private final CompanyInterestRepository companies;
     private final VagaService vacancies;
+    private final VacancyApplicationRepository applications;
+
+    @GetMapping("/vacancies/{vacancyId}/application-status")
+    public ApplicationStatus applicationStatus(@PathVariable long vacancyId) {
+        return applications.status(vacancyId);
+    }
+
+    @PostMapping("/vacancies/{vacancyId}/applications")
+    public ApplicationResponse apply(@PathVariable long vacancyId, @Valid @RequestBody ApplicationRequest request) {
+        return applications.apply(vacancyId, request.income());
+    }
 
     @GetMapping("/companies")
     public PageView<PartnerCompany> companies(@RequestParam(defaultValue = "0") int page,

@@ -192,7 +192,8 @@ class BatchGraphReadIntegrationTest {
         long newQueries = queryCount();
         assertThat(newCandidates).containsExactlyElementsOf(oldCandidates);
         assertThat(newVacancies).containsExactlyElementsOf(oldVacancies);
-        assertThat(newQueries).isEqualTo(8).isLessThan(oldQueries / 10);
+        // Vacancy experiences no longer need a query for nested skills.
+        assertThat(newQueries).isEqualTo(7).isLessThan(oldQueries / 10);
         System.out.printf("Batch read comparison (20 vacancies, 30 candidates): individual=%d queries / %.1f ms; batch=%d queries / %.1f ms%n",
                 oldQueries, oldNanos / 1_000_000.0, newQueries, newNanos / 1_000_000.0);
     }
