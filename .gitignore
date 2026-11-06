@@ -13,6 +13,9 @@
 !/docs/
 /docs/*
 !/docs/candidatura-publica.md
+!/docs/candidate-similarity-fora.md
+!/docs/candidate-similarity-example.json
+!/docs/workspace-listing-cache.md
 
 !/.mvn/
 /.mvn/*
@@ -24,6 +27,7 @@
 /scripts/*
 !/scripts/main_script.txt
 !/scripts/novos_candidatos_51_75.txt
+!/scripts/funcionarios-tech-corp.txt
 
 ### Local configuration and keys, including inside src/ ###
 .env

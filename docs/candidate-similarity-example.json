@@ -1,0 +1,52 @@
+{
+  "referenceCandidateId" : "1",
+  "requestedK" : 1,
+  "returnedCount" : 1,
+  "sourceSkills" : [ {
+    "skillId" : "1",
+    "name" : "Skill1",
+    "frequency" : 5,
+    "sigma" : 0.5,
+    "evidenceCounts" : {
+      "EXPERIENCE" : 5
+    }
+  }, {
+    "skillId" : "2",
+    "name" : "Skill2",
+    "frequency" : 3,
+    "sigma" : 0.3,
+    "evidenceCounts" : {
+      "EXPERIENCE" : 3
+    }
+  }, {
+    "skillId" : "3",
+    "name" : "Skill3",
+    "frequency" : 2,
+    "sigma" : 0.2,
+    "evidenceCounts" : {
+      "EXPERIENCE" : 2
+    }
+  } ],
+  "candidates" : [ {
+    "id" : "2",
+    "name" : "B",
+    "professionalTitle" : "Dev",
+    "score" : 0.12633995875444692,
+    "sharedSkills" : [ {
+      "skillId" : "1",
+      "name" : "Skill1",
+      "referenceFrequency" : 5,
+      "candidateFrequency" : 4,
+      "referenceEvidenceCounts" : {
+        "EXPERIENCE" : 5
+      },
+      "candidateEvidenceCounts" : {
+        "EXPERIENCE" : 4
+      }
+    } ],
+    "indirectAffinity" : false
+  } ],
+  "reason" : null,
+  "qualityStatus" : "APPROXIMATION_TARGET_MET",
+  "approximationTargetMet" : true
+}

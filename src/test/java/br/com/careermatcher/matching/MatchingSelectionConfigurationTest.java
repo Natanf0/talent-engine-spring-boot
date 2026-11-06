@@ -44,7 +44,7 @@ class MatchingSelectionConfigurationTest {
             application.getBean(MatchingSelectionValidator.class)
                     .validate(mapper.readTree("{\"candidateIds\":[1],\"vacancyIds\":[2]}"));
             verify(repository).findByIds(VACANCY, List.of(2L), expected);
-            verify(repository).findByIds(CANDIDATE, List.of(1L), expected);
+            verify(repository).findTalentPoolByIds(List.of(1L), expected);
         });
     }
 }

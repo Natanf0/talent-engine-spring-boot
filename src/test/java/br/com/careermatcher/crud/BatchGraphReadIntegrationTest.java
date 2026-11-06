@@ -221,7 +221,7 @@ class BatchGraphReadIntegrationTest {
         long candidate = graph.createCandidateForRegistration(mapper.createObjectNode().put("name", "Ana"));
         client.query("UNWIND range(1,30) AS i CREATE (:COMPANY {name:'Company '+i})").run();
         actor.candidate(candidate);
-        var companies = new CompanyInterestRepository(client, actor);
+        var companies = new CompanyInterestRepository(client, actor, org.mockito.Mockito.mock(br.com.careermatcher.listings.WorkspaceListings.class));
         for (int size : List.of(1, 10, 25)) {
             clearInvocations(client);
             var page = companies.findPage(0, size);

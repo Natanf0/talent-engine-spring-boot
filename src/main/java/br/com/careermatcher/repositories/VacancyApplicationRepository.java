@@ -18,6 +18,7 @@ import java.util.Map;
 public class VacancyApplicationRepository {
     private final Neo4jClient client;
     private final CurrentActor actor;
+    private final br.com.careermatcher.listings.WorkspaceListings listings;
 
     @Transactional(readOnly = true)
     public ApplicationStatus status(long vacancyId) {
@@ -43,7 +44,7 @@ public class VacancyApplicationRepository {
                 """).bind(candidateId).to("candidateId").fetch().one().isEmpty())
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Candidato não encontrado.");
 
-        return client.query("""
+        var result = client.query("""
                 MATCH (candidate:CANDIDATE) WHERE id(candidate)=$candidateId
                 MATCH (company:COMPANY)-[:PUBLISHES]->(vacancy:VACANCY) WHERE id(vacancy)=$vacancyId
                 MERGE (candidate)-[:`INTERESTED IN`]->(company)
@@ -58,5 +59,7 @@ public class VacancyApplicationRepository {
                             companyName, row.get("income").asDouble(),
                             "Parabéns, sua candidatura foi enviada com sucesso a " + companyName + ".");
                 }).one().orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Vaga não encontrada."));
+        listings.invalidateAfterCommit(result.companyId(),br.com.careermatcher.listings.WorkspaceListings.Listing.TALENT_POOL);
+        return result;
     }
 }

@@ -1,0 +1,50 @@
+Inglês|English
+Mandarim|Mandarin Chinese|Chinese|Mandarin
+Hindi|Hindi
+Espanhol|Spanish
+Árabe padrão|Standard Arabic|Arabic|Árabe
+Francês|French
+Bengali|Bengali
+Português|Portuguese
+Russo|Russian
+Indonésio|Indonesian
+Urdu|Urdu
+Alemão|Standard German|German
+Japonês|Japanese
+Pidgin nigeriano|Nigerian Pidgin
+Árabe egípcio|Egyptian Arabic
+Marata|Marathi
+Vietnamita|Vietnamese
+Telugu|Telugu
+Hauçá|Hausa
+Turco|Turkish
+Punjabi ocidental|Western Punjabi
+Suaíli|Swahili
+Tagalo|Tagalog|Filipino
+Tâmil|Tamil
+Cantonês|Yue Chinese|Cantonese
+Chinês Wu|Wu Chinese
+Persa iraniano|Iranian Persian|Persian|Persa
+Coreano|Korean
+Tailandês|Thai
+Javanês|Javanese
+Italiano|Italian
+Guzerate|Gujarati
+Árabe levantino|Levantine Arabic
+Amárico|Amharic
+Canarês|Kannada
+Bhojpuri|Bhojpuri
+Árabe sudanês|Sudanese Arabic
+Iorubá|Yoruba
+Chinês Jin|Jinyu Chinese
+Chinês Min Nan|Min Nan Chinese
+Polonês|Polish
+Birmanês|Burmese
+Árabe argelino|Algerian Arabic
+Chinês Hakka|Hakka Chinese
+Lingala|Lingala
+Árabe marroquino|Moroccan Arabic
+Odia|Odia
+Ucraniano|Ukrainian
+Chinês Xiang|Xiang Chinese
+Malaiala|Malayalam

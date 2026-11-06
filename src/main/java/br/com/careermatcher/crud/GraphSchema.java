@@ -7,7 +7,7 @@ import java.util.*;
 public final class GraphSchema {
     private GraphSchema() {}
     public enum Kind { CANDIDATE, VACANCY, RESUME, EXPERIENCE, UNDERGRADUATE, GRADUATE, PROJECT, SKILL, LANGUAGE }
-    public enum Type { TEXT, HTML, EMAIL, PHONE, URL, PASSWORD, DATE, MONTHS, NUMBER, POSITIVE_NUMBER, BOOLEAN, ENUM }
+    public enum Type { TEXT, HTML, EMAIL, PHONE, URL, PASSWORD, DATE, LOCAL_DATE, MONTHS, NUMBER, POSITIVE_NUMBER, BOOLEAN, ENUM }
     public record Field(String name, Type type, boolean required, int limit, Set<String> values) {}
     public record Edge(String field, String relationship, Kind target, boolean many, String wrapper, List<Field> attributes) {}
     public record Node(Kind kind, List<Field> fields, List<Edge> edges) {}
@@ -42,7 +42,9 @@ public final class GraphSchema {
     public static Node node(Kind kind, Kind aggregate) {
         Node schema = node(kind);
         return kind == Kind.EXPERIENCE && aggregate == Kind.VACANCY
-                ? new Node(kind, schema.fields(), List.of()) : schema;
+                ? new Node(kind, schema.fields().stream()
+                        .filter(f -> !Set.of("startDate", "endDate", "currentJob").contains(f.name()))
+                        .map(f -> f.name().equals("durationMonths") ? field("durationMonths", Type.MONTHS, true, 0) : f).toList(), List.of()) : schema;
     }
     public static Node node(Kind kind) {
         return switch (kind) {
@@ -62,7 +64,9 @@ public final class GraphSchema {
                     edge("undergraduate", "GRADUATED_IN", Kind.UNDERGRADUATE, false),
                     edge("graduates", "POSTGRADUATED_IN", Kind.GRADUATE, true)));
             case EXPERIENCE -> new Node(kind, List.of(text("role", true), text("companyName", false),
-                    field("description", Type.HTML, false, 5000), field("durationMonths", Type.MONTHS, true, 0),
+                    field("description", Type.HTML, false, 5000), field("durationMonths", Type.MONTHS, false, 0),
+                    field("startDate", Type.LOCAL_DATE, false, 0), field("endDate", Type.LOCAL_DATE, false, 0),
+                    field("currentJob", Type.BOOLEAN, false, 0),
                     enumeration("seniority", true, SENIORITY.class)), List.of(weighted("skills", "DEVELOPS_SKILL", false)));
             case UNDERGRADUATE -> new Node(kind, List.of(text("field", true), text("institution", false),
                     field("completionDate", Type.DATE, false, 0), enumeration("undergraduateType", false, UNDERGRADUATETYPE.class)),

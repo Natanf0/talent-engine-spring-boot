@@ -72,6 +72,12 @@ public class GraphCrudRepository {
                         "companyLabel", "COMPANY", "interestRelationship", CompanyInterestRepository.RELATIONSHIP));
     }
 
+    private static Scope talentPoolScope(Scope scope) {
+        var parameters=new HashMap<>(scope.parameters());
+        parameters.putAll(br.com.careermatcher.listings.TalentPoolScope.PARAMETERS);
+        return new Scope(scope.match()+" AND "+br.com.careermatcher.listings.TalentPoolScope.notInternal("n","$companyId"),parameters);
+    }
+
     private void requireRoot(Kind kind, long id, boolean lock) {
         Scope scope = scope(kind, false);
         String query = scope.match() + " AND id(n)=$id "
@@ -82,6 +88,7 @@ public class GraphCrudRepository {
 
     public List<ObjectNode> findAll(Kind kind) {
         Scope scope = scope(kind, true);
+        if (kind == Kind.CANDIDATE) scope=talentPoolScope(scope);
         return client.query(scope.match() + " RETURN DISTINCT id(n) AS id ORDER BY id(n)")
                 .bindAll(scope.parameters()).fetchAs(Long.class).mappedBy((types, record) -> record.get("id").asLong()).all().stream()
                 .map(id -> find(kind, id)).toList();
@@ -145,6 +152,7 @@ public class GraphCrudRepository {
     /** The page and its total must use exactly the same scope and search predicate. */
     private Scope pageScope(Kind kind, String search) {
         Scope scope = scope(kind, kind != Kind.VACANCY);
+        if (kind == Kind.CANDIDATE) scope = talentPoolScope(scope);
         if (search == null || search.isBlank()) return scope;
         Map<String, Object> parameters = new HashMap<>(scope.parameters());
         parameters.put("search", search.strip().toLowerCase(Locale.ROOT));
@@ -155,7 +163,7 @@ public class GraphCrudRepository {
                 + " OR toLower(" + summaryText("field") + ") CONTAINS $search)", parameters);
     }
 
-    private static Map<String, Map<String, String>> displayLabels(Kind kind) {
+    public static Map<String, Map<String, String>> displayLabels(Kind kind) {
         return kind == Kind.VACANCY ? VACANCY_LABELS : Map.of();
     }
 
@@ -194,8 +202,28 @@ public class GraphCrudRepository {
      */
     @Transactional(readOnly = true)
     public List<ObjectNode> findByIds(Kind kind, List<Long> ids, int batchSize) {
+        return findByIds(kind,ids,batchSize,false);
+    }
+
+    /** Authoritative matching scope; full profile access also serves internal relocation separately. */
+    @Transactional(readOnly = true)
+    public List<ObjectNode> findTalentPoolByIds(List<Long> ids,int batchSize) {
+        actor.requireCompany();
+        return findByIds(Kind.CANDIDATE,ids,batchSize,true);
+    }
+
+    @Transactional(readOnly = true)
+    public List<Long> talentPoolIds() {
+        long company = actor.requireCompany();
+        return client.query("MATCH (n:CANDIDATE)-[:`INTERESTED IN`]->(company:COMPANY) WHERE id(company)=$company AND "
+                +br.com.careermatcher.listings.TalentPoolScope.notInternal("n","$company")+" RETURN DISTINCT id(n) AS id ORDER BY id")
+                .bindAll(br.com.careermatcher.listings.TalentPoolScope.PARAMETERS).bind(company).to("company").fetchAs(Long.class).all().stream().toList();
+    }
+
+    private List<ObjectNode> findByIds(Kind kind,List<Long> ids,int batchSize,boolean talentOnly) {
         if (batchSize < 1) throw new IllegalArgumentException("batchSize deve ser maior que zero.");
         Scope scope = scope(kind, false);
+        if (talentOnly) scope = talentPoolScope(scope);
         Map<NodeKey, LoadedNode> graph = new HashMap<>();
         Map<Kind, Set<Long>> pending = new EnumMap<>(Kind.class);
         List<Long> uniqueIds = new ArrayList<>(new LinkedHashSet<>(ids));
@@ -206,7 +234,7 @@ public class GraphCrudRepository {
             for (var row : roots) {
                 long id = ((Number) row.get("id")).longValue();
                 found.add(id);
-                remember(graph, pending, new NodeKey(kind, id), castMap(row.get("properties")));
+                remember(graph, pending, new NodeKey(kind, id), castMap(row.get("properties")), kind);
             }
             if (!found.containsAll(batch))
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Registro não encontrado.");
@@ -238,7 +266,7 @@ public class GraphCrudRepository {
                         NodeKey source = new NodeKey(sourceKind, ((Number) row.get("source")).longValue());
                         NodeKey target = new NodeKey(Kind.valueOf((String) row.get("targetLabel")),
                                 ((Number) row.get("target")).longValue());
-                        remember(graph, next, target, castMap(row.get("properties")));
+                        remember(graph, next, target, castMap(row.get("properties")), kind);
                         graph.get(source).edges().computeIfAbsent((String) row.get("field"), ignored -> new ArrayList<>())
                                 .add(new GraphLink(target, castMap(row.get("attributes"))));
                     }
@@ -270,9 +298,9 @@ public class GraphCrudRepository {
     }
 
     private void remember(Map<NodeKey, LoadedNode> graph, Map<Kind, Set<Long>> pending,
-                          NodeKey key, Map<String, Object> properties) {
+                          NodeKey key, Map<String, Object> properties, Kind aggregate) {
         if (graph.containsKey(key)) return;
-        graph.put(key, new LoadedNode(readProperties(key.kind(), key.id(), properties), new HashMap<>()));
+        graph.put(key, new LoadedNode(readProperties(key.kind(), key.id(), properties, aggregate), new HashMap<>()));
         if (!GraphSchema.node(key.kind()).edges().isEmpty())
             pending.computeIfAbsent(key.kind(), ignored -> new LinkedHashSet<>()).add(key.id());
     }
@@ -327,7 +355,7 @@ public class GraphCrudRepository {
         Map<String, Object> properties = client.query("MATCH (n) WHERE id(n)=$id AND $label IN labels(n) RETURN properties(n) AS properties")
                 .bind(kind.name()).to("label").bind(id).to("id").fetch().one().map(row -> castMap(row.get("properties")))
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Registro não encontrado."));
-        ObjectNode result = readProperties(kind, id, properties);
+        ObjectNode result = readProperties(kind, id, properties, aggregate);
         for (Edge edge : GraphSchema.node(kind, aggregate).edges()) {
             // Optional types and labels may not exist yet in a freshly seeded database.
             var relationships = client.query("""
@@ -368,6 +396,21 @@ public class GraphCrudRepository {
     }
 
     /** Candidate changes are only allowed through the owner's profile. */
+    public List<Long> candidateWorkspaceIds(long id) {
+        requireCandidateUpdate(id);
+        return client.query("""
+                MATCH (n:CANDIDATE) WHERE id(n)=$id
+                CALL {
+                  WITH n MATCH (n)-[:`INTERESTED IN`]->(c:COMPANY) RETURN id(c) AS company
+                  UNION
+                  WITH n MATCH (n)-[:HAS]->(:RESUME)-[:HasExperience]->(e:EXPERIENCE)
+                  WHERE e.confirmed=true AND e.confirmedCompanyId IS NOT NULL RETURN e.confirmedCompanyId AS company
+                }
+                RETURN DISTINCT company AS id
+                """)
+                .bind(id).to("id").fetchAs(Long.class).all().stream().toList();
+    }
+
     public void requireCandidateUpdate(long id) {
         if (actor.requireCandidate() != id)
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Registro não encontrado.");
@@ -424,6 +467,18 @@ public class GraphCrudRepository {
             if (!changedFields.contains(edge.field())) continue;
             List<Long> oldChildren = detach(id, edge);
             attach(id, edge, data.get(edge.field()));
+            if (kind == Kind.CANDIDATE && edge.field().equals("resume")) {
+                // Only identical employment details retain server-issued verification across graph replacement.
+                client.query("""
+                    MATCH (c:CANDIDATE)-[:HAS]->(:RESUME)-[:HasExperience]->(fresh:EXPERIENCE)
+                    WHERE id(c)=$candidate AND fresh.currentJob=true
+                    MATCH (old:RESUME)-[:HasExperience]->(previous:EXPERIENCE)
+                    WHERE id(old) IN $old AND previous.confirmed=true AND previous.currentJob=true
+                      AND fresh.role=previous.role AND fresh.companyName=previous.companyName
+                      AND toString(fresh.startDate)=toString(previous.startDate)
+                    SET fresh.confirmed=true, fresh.confirmedCompanyId=previous.confirmedCompanyId
+                    """).bindAll(Map.of("candidate", id, "old", oldChildren)).run();
+            }
             oldChildren.forEach(child -> cleanup(child, edge.target()));
         }
         if (kind == Kind.CANDIDATE && changedFields.contains("name"))
@@ -493,16 +548,26 @@ public class GraphCrudRepository {
             JsonNode value = data.get(field.name());
             props.put(field.name(), value == null || value.isNull() ? null : mapper.convertValue(value, Object.class));
         }
+        if (fields.stream().anyMatch(f -> f.name().equals("currentJob"))) props.put("confirmed", false);
         return props;
     }
-    private ObjectNode readProperties(Kind kind, long id, Map<String, Object> properties) {
+    private ObjectNode readProperties(Kind kind, long id, Map<String, Object> properties, Kind aggregate) {
         ObjectNode result = mapper.createObjectNode().put("id", id);
-        for (Field field : GraphSchema.node(kind).fields()) {
+        for (Field field : GraphSchema.node(kind, aggregate).fields()) {
             Object value = properties.get(field.name());
             if (value != null) {
-                if (field.type() == Type.DATE) result.put(field.name(), dateString(value));
+                if (field.type() == Type.DATE || field.type() == Type.LOCAL_DATE) result.put(field.name(), dateString(value));
                 else result.set(field.name(), mapper.valueToTree(value));
             }
+        }
+        if (kind == Kind.EXPERIENCE && aggregate != Kind.VACANCY)
+            result.put("confirmed", Boolean.TRUE.equals(properties.get("confirmed")));
+        if (kind == Kind.EXPERIENCE && result.hasNonNull("startDate")
+                && (result.path("currentJob").asBoolean(false) || result.hasNonNull("endDate"))) {
+            var start = java.time.LocalDate.parse(result.path("startDate").asText());
+            var end = result.path("currentJob").asBoolean(false) ? java.time.LocalDate.now(java.time.ZoneOffset.UTC)
+                    : java.time.LocalDate.parse(result.path("endDate").asText());
+            result.put("durationMonths", br.com.careermatcher.models.ExperiencePeriod.months(start, end));
         }
         return result;
     }

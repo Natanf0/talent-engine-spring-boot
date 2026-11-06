@@ -20,6 +20,7 @@ public class CandidatoService {
     private final GraphCrudRepository repository;
     private final CandidatoValidations validations;
     private final ObjectMapper mapper;
+    private final br.com.careermatcher.listings.WorkspaceListings listings;
 
     /** Called only by account registration inside the enclosing account transaction. */
     public CandidateView registerCandidate(ObjectNode input) {
@@ -30,10 +31,14 @@ public class CandidatoService {
     public CandidateView patch(long id, ObjectNode patch) {
         repository.requireCandidateUpdate(id);
         repository.lock(CANDIDATE, id);
+        var companies = repository.candidateWorkspaceIds(id);
         ObjectNode clean = validations.patch(repository.find(CANDIDATE, id), patch);
         Set<String> changed = new HashSet<>();
         patch.fieldNames().forEachRemaining(changed::add);
         repository.update(CANDIDATE, id, clean, changed);
+        companies.forEach(company -> listings.invalidateAfterCommit(company,
+                br.com.careermatcher.listings.WorkspaceListings.Listing.TALENT_POOL,
+                br.com.careermatcher.listings.WorkspaceListings.Listing.INTERNAL));
         return view(repository.find(CANDIDATE, id));
     }
 
@@ -43,25 +48,20 @@ public class CandidatoService {
     @Transactional(readOnly = true)
     public CandidateView findCandidate(long id) { return view(repository.find(CANDIDATE, id)); }
 
-    public void delete(long id) { repository.lock(CANDIDATE, id); repository.delete(CANDIDATE, id); }
+    public void delete(long id) { repository.lock(CANDIDATE, id); repository.delete(CANDIDATE, id); listings.invalidateCurrentAfterCommit(br.com.careermatcher.listings.WorkspaceListings.Listing.TALENT_POOL); }
 
     private CandidateView view(ObjectNode data) {
         ObjectNode publicData = data.deepCopy();
         publicData.remove("password");
         return mapper.convertValue(publicData, CandidateView.class);
     }
-    @Transactional(readOnly = true)
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public PageView<CandidateSummary> findPage(int page, int size) {
         return findPage(page, size, null, null, "asc");
     }
-    @Transactional(readOnly = true)
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public PageView<CandidateSummary> findPage(int page, int size, String search, String sort, String direction) {
-        GraphCrudRepository.validatePage(page, size);
-        GraphCrudRepository.validateSort(CANDIDATE, sort, direction);
-        long total = repository.count(CANDIDATE, search);
-        var content = repository.findPage(CANDIDATE, page, size, search, sort, direction).stream()
-                .map(item -> mapper.convertValue(item, CandidateSummary.class)).toList();
-        return new PageView<>(content, page, size, total, (total + size - 1) / size);
+        return listings.candidates(br.com.careermatcher.listings.WorkspaceListings.Listing.TALENT_POOL,page,size,search,sort,direction);
     }
 
 }

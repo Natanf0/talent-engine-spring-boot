@@ -13,6 +13,8 @@ public class CandidatoValidations {
         ObjectNode writable = graph.withoutIds(current);
         // E-mail is projected from USER and is not writable through candidate CRUD.
         writable.remove("email");
+        var experiences = writable.path("resume").path("experiences");
+        if (experiences.isArray()) experiences.forEach(e -> ((ObjectNode)e).remove("confirmed"));
         return validate(graph.merge(writable, patch));
     }
 }

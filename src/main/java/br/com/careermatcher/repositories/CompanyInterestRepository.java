@@ -18,6 +18,7 @@ public class CompanyInterestRepository {
     public record PartnerCompany(long id, String name, boolean interested) {}
     private final Neo4jClient client;
     private final CurrentActor actor;
+    private final br.com.careermatcher.listings.WorkspaceListings listings;
 
     @Transactional(readOnly = true)
     public PageView<PartnerCompany> findPage(int page, int size) {
@@ -63,5 +64,6 @@ public class CompanyInterestRepository {
                     DELETE interest
                     """).bindAll(parameters).bind(RELATIONSHIP).to("relationship").run();
         }
+        listings.invalidateAfterCommit(companyId,br.com.careermatcher.listings.WorkspaceListings.Listing.TALENT_POOL);
     }
 }

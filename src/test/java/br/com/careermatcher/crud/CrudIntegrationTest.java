@@ -50,12 +50,404 @@ class CrudIntegrationTest {
                     + "_normalized IF NOT EXISTS FOR (n:" + label + ") REQUIRE n.normalizedName IS UNIQUE").run();
         }
         mvc = MockMvcBuilders.standaloneSetup(new CandidatoController(candidates), new VagaController(vacancies),
-                new CompanyController(context.getBean(CompanyService.class)))
+                new CompanyController(context.getBean(CompanyService.class)),
+                new ResumeFormConfigurationController(context.getBean(ResumeSkillPolicy.class)),
+                new CatalogController(context.getBean(CatalogRepository.class), context.getBean(TextSanitizer.class)))
                 .setControllerAdvice(new CrudExceptionHandler()).build();
     }
+    @Test void talentPoolExcludesOnlyCurrentConfirmedEmployeesOfItsWorkspaceAndPreservesProfileAccess() throws Exception {
+        client.query("""
+            UNWIND [
+              {name:'External',confirmed:false,current:true,company:$company},
+              {name:'Internal',confirmed:true,current:true,company:$company},
+              {name:'Former',confirmed:true,current:false,company:$company},
+              {name:'Other employer',confirmed:true,current:true,company:-999}
+            ] AS item
+            MATCH (company:COMPANY) WHERE id(company)=$company
+            CREATE (candidate:CANDIDATE {name:item.name,professionalTitle:'Dev'})-[:`INTERESTED IN`]->(company)
+            CREATE (candidate)-[:HAS]->(:RESUME)-[:HasExperience]->(:EXPERIENCE {confirmed:item.confirmed,currentJob:item.current,confirmedCompanyId:item.company})
+            """).bind(companyId).to("company").run();
+        client.query("""
+            MATCH(company:COMPANY) WHERE id(company)=$company
+            CREATE (c:CANDIDATE {name:'Split signals',professionalTitle:'Dev'})-[:`INTERESTED IN`]->(company)
+            CREATE(c)-[:HAS]->(r:RESUME)
+            CREATE(r)-[:HasExperience]->(:EXPERIENCE {confirmed:true,currentJob:false,confirmedCompanyId:$company})
+            CREATE(r)-[:HasExperience]->(:EXPERIENCE {confirmed:false,currentJob:true,confirmedCompanyId:$company})
+            """).bind(companyId).to("company").run();
+        var graph=context.getBean(GraphCrudRepository.class);
+        var expected=List.of("External","Former","Other employer","Split signals");
+        assertThat(candidates.findPage(0,10).content()).extracting(br.com.careermatcher.DTOs.crud.CrudDtos.CandidateSummary::name).containsExactlyElementsOf(expected);
+        assertThat(candidates.findAll()).extracting(c->c.name()).containsExactlyElementsOf(expected);
+        assertThat(graph.findPage(GraphSchema.Kind.CANDIDATE,0,10)).extracting(n->n.path("name").asText()).containsExactlyElementsOf(expected);
+        assertThat(context.getBean(br.com.careermatcher.relocation.RelocationService.class).list(0,10,"").content()).extracting(br.com.careermatcher.DTOs.crud.CrudDtos.CandidateSummary::name).containsExactly("Internal");
+        long internal=client.query("MATCH(c:CANDIDATE {name:'Internal'}) RETURN id(c) AS id").fetchAs(Long.class).one().orElseThrow();
+        assertThat(candidates.findCandidate(internal).name()).isEqualTo("Internal");
+        assertThatThrownBy(()->graph.findTalentPoolByIds(List.of(internal),200)).isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+        assertThat(graph.talentPoolIds()).hasSize(4).doesNotContain(internal);
+    }
+
+    @Test void allSelectionIncludesEveryEligibleCandidateBeyondCacheWindowAndRejectsInternalManualSelection() throws Exception {
+        seedListing(br.com.careermatcher.listings.WorkspaceListings.Listing.TALENT_POOL,305);
+        seedListing(br.com.careermatcher.listings.WorkspaceListings.Listing.INTERNAL,5);
+        assertThat(candidates.findPage(0,100).totalElements()).isEqualTo(305);
+        var vacancy=vacancies.create(fixture("vacancy"));
+        var graph=context.getBean(GraphCrudRepository.class);
+        var validator=new br.com.careermatcher.matching.MatchingSelectionValidator(graph,mapper,context.getBean(TestActor.class),200);
+        var selection=validator.validate(mapper.valueToTree(Map.of("allCandidates",true,"vacancyIds",List.of(vacancy.id()))));
+        assertThat(selection.candidates()).hasSize(305);
+        assertThat(selection.candidates()).extracting(c->c.id()).containsExactlyElementsOf(graph.talentPoolIds());
+        long excluded=selection.candidates().get(304).id();
+        var partial=validator.validate(mapper.valueToTree(Map.of("allCandidates",true,"excludedCandidateIds",List.of(excluded),"vacancyIds",List.of(vacancy.id()))));
+        assertThat(partial.candidates()).hasSize(304);
+        assertThat(partial.candidates()).extracting(c->c.id()).doesNotContain(excluded);
+        long internal=client.query("MATCH(c:CANDIDATE)-[:HAS]->(:RESUME)-[:HasExperience]->(:EXPERIENCE {confirmed:true,currentJob:true}) RETURN id(c) AS id LIMIT 1").fetchAs(Long.class).one().orElseThrow();
+        assertThatThrownBy(()->validator.validate(mapper.valueToTree(Map.of("candidateIds",List.of(internal),"vacancyIds",List.of(vacancy.id())))))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+        context.getBean(TestActor.class).staff(companyId+999);
+        assertThat(graph.talentPoolIds()).isEmpty();
+    }
+
+    @Test void sharesSummaryCacheAcrossCompanyRolesAndReauthorizesEveryHit() throws Exception {
+        var candidate=registerInterested(fixture("candidate"));
+        var actor=context.getBean(TestActor.class);
+        assertThat(candidates.findPage(0,10).content().getFirst().name()).isEqualTo(candidate.name());
+        client.query("MATCH (c:CANDIDATE) WHERE id(c)=$id SET c.name='External change'").bind(candidate.id()).to("id").run();
+        for(var role:List.of(br.com.careermatcher.enums.Role.RECRUTADOR,br.com.careermatcher.enums.Role.GERENTE,br.com.careermatcher.enums.Role.ADMINISTRADOR)) {
+            actor.staff(companyId,role);
+            assertThat(candidates.findPage(0,10).content().getFirst().name()).isEqualTo(candidate.name());
+        }
+        actor.staff(companyId+999);
+        assertThat(candidates.findPage(0,10).content()).isEmpty();
+        actor.candidate(candidate.id());
+        assertThatThrownBy(()->candidates.findPage(0,10)).isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(br.com.careermatcher.listings.WorkspaceListings.Listing.class)
+    void cachesOnlyFirst300SummariesWithoutTruncatingDeepPagesSearchOrSorting(br.com.careermatcher.listings.WorkspaceListings.Listing type) {
+        seedListing(type,305);
+        var spyClient=spy(client);
+        var listings=testListings(spyClient,()->0L);
+        var first=listingPage(listings,type,0,100,"",null,"asc");
+        assertThat(first.content()).hasSize(100); assertThat(first.totalElements()).isEqualTo(305);
+        verify(spyClient,times(2)).query(anyString()); clearInvocations(spyClient);
+        assertThat(listingPage(listings,type,2,100,"",null,"asc").content()).hasSize(100);
+        verifyNoInteractions(spyClient);
+        String label=type==br.com.careermatcher.listings.WorkspaceListings.Listing.VACANCIES?"VACANCY":"CANDIDATE";
+        String field=type==br.com.careermatcher.listings.WorkspaceListings.Listing.VACANCIES?"role":"professionalTitle";
+        client.query("MATCH (n:"+label+") WHERE n.seedIndex=304 SET n."+field+"='Beyond cached window'").run();
+        var deep=listingPage(listings,type,3,100,"",null,"asc");
+        assertThat(deep.content()).hasSize(5);
+        assertThat(mapper.valueToTree(deep.content()).toString()).contains("Beyond cached window");
+        verify(spyClient,times(2)).query(anyString()); clearInvocations(spyClient);
+        var found=listingPage(listings,type,0,10,"beyond cached window",null,"asc");
+        assertThat(found.totalElements()).isEqualTo(1); assertThat(found.content()).hasSize(1);
+        verify(spyClient,times(2)).query(anyString()); clearInvocations(spyClient);
+        var sorted=listingPage(listings,type,0,10,"",type==br.com.careermatcher.listings.WorkspaceListings.Listing.VACANCIES?"role":"name","desc");
+        assertThat(sorted.totalElements()).isEqualTo(305);
+        verify(spyClient,times(2)).query(anyString());
+    }
+
+    @Test void expiresPeopleAfter10MinutesAndVacanciesAfter2Minutes() {
+        var ticks=new java.util.concurrent.atomic.AtomicLong();
+        var listings=testListings(client,ticks::get);
+        for(var type:br.com.careermatcher.listings.WorkspaceListings.Listing.values())
+            assertThat(listingPage(listings,type,0,10,"",null,"asc").totalElements()).isZero();
+        seedListing(br.com.careermatcher.listings.WorkspaceListings.Listing.INTERNAL,1);
+        seedListing(br.com.careermatcher.listings.WorkspaceListings.Listing.TALENT_POOL,1);
+        seedListing(br.com.careermatcher.listings.WorkspaceListings.Listing.VACANCIES,1);
+        ticks.set(java.time.Duration.ofMinutes(2).toNanos()-1);
+        assertThat(listingPage(listings,br.com.careermatcher.listings.WorkspaceListings.Listing.VACANCIES,0,10,"",null,"asc").totalElements()).isZero();
+        ticks.incrementAndGet();
+        assertThat(listingPage(listings,br.com.careermatcher.listings.WorkspaceListings.Listing.VACANCIES,0,10,"",null,"asc").totalElements()).isEqualTo(1);
+        for(var type:List.of(br.com.careermatcher.listings.WorkspaceListings.Listing.TALENT_POOL,br.com.careermatcher.listings.WorkspaceListings.Listing.INTERNAL))
+            assertThat(listingPage(listings,type,0,10,"",null,"asc").totalElements()).isZero();
+        ticks.set(java.time.Duration.ofMinutes(10).toNanos());
+        for(var type:List.of(br.com.careermatcher.listings.WorkspaceListings.Listing.TALENT_POOL,br.com.careermatcher.listings.WorkspaceListings.Listing.INTERNAL))
+            assertThat(listingPage(listings,type,0,10,"",null,"asc").totalElements()).isEqualTo(1);
+    }
+
+    @Test void vacancyWritesRefreshSharedListAfterCommitAndRollbackDoesNotPublishUncommittedRows() throws Exception {
+        assertThat(vacancies.findPage(0,10).totalElements()).isZero();
+        var tx=new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
+        tx.execute(status->{
+            try { vacancies.create(fixture("vacancy")); } catch(Exception e) { throw new RuntimeException(e); }
+            assertThat(context.getBean(br.com.careermatcher.listings.WorkspaceListings.class).vacancies(0,10,"",null,"asc").totalElements()).isEqualTo(1);
+            status.setRollbackOnly(); return null;
+        });
+        assertThat(vacancies.findPage(0,10).totalElements()).isZero();
+        var vacancy=vacancies.create(fixture("vacancy"));
+        assertThat(vacancies.findPage(0,10).content()).extracting(br.com.careermatcher.DTOs.crud.CrudDtos.VacancySummary::id).containsExactly(vacancy.id());
+        vacancies.patch(vacancy.id(),object("{\"city\":\"Cidade nova\"}"));
+        assertThat(vacancies.findPage(0,10,"Cidade nova",null,"asc").totalElements()).isEqualTo(1);
+        vacancies.delete(vacancy.id());
+        assertThat(vacancies.findPage(0,10).totalElements()).isZero();
+    }
+
+    @Test void interestApplicationAndProfileChangesInvalidateAffectedCompanyListings() throws Exception {
+        var candidate=registerInterested(fixture("candidate"));
+        var vacancy=vacancies.create(fixture("vacancy"));
+        assertThat(candidates.findPage(0,10).totalElements()).isEqualTo(1);
+        var actor=context.getBean(TestActor.class); actor.candidate(candidate.id());
+        context.getBean(CompanyInterestRepository.class).setInterest(companyId,false);
+        actor.staff(companyId); assertThat(candidates.findPage(0,10).totalElements()).isZero();
+        actor.candidate(candidate.id());
+        context.getBean(VacancyApplicationRepository.class).apply(vacancy.id(),java.math.BigDecimal.valueOf(1000));
+        actor.staff(companyId); assertThat(candidates.findPage(0,10).totalElements()).isEqualTo(1);
+        long secondCompany=client.query("CREATE (co:COMPANY {name:'Second workspace'}) RETURN id(co) AS id").fetchAs(Long.class).one().orElseThrow();
+        client.query("MATCH (c:CANDIDATE),(co:COMPANY) WHERE id(c)=$candidate AND id(co)=$company MERGE (c)-[:`INTERESTED IN`]->(co)")
+                .bind(candidate.id()).to("candidate").bind(secondCompany).to("company").run();
+        actor.staff(secondCompany); assertThat(candidates.findPage(0,10).totalElements()).isEqualTo(1);
+        actor.candidate(candidate.id());
+        candidates.patch(candidate.id(),object("{\"professionalTitle\":\"Arquiteta atualizada\"}"));
+        for(long company:List.of(companyId,secondCompany)) {
+            actor.staff(company);
+            assertThat(candidates.findPage(0,10).content().getFirst().professionalTitle()).isEqualTo("Arquiteta atualizada");
+        }
+    }
+
+    @Test void completeCachedSnapshotsUseSameSearchAndLocalizedSortingAsDatabase() {
+        seedListing(br.com.careermatcher.listings.WorkspaceListings.Listing.VACANCIES,3);
+        var spyClient=spy(client); var listings=testListings(spyClient,()->0L);
+        assertThat(listings.vacancies(0,10,"",null,"asc").totalElements()).isEqualTo(3);
+        clearInvocations(spyClient);
+        assertThat(listings.vacancies(0,10,"pleno",null,"asc").totalElements()).isEqualTo(3);
+        assertThat(listings.vacancies(0,10,"remoto","seniority","desc").totalElements()).isEqualTo(3);
+        assertThat(listings.vacancies(0,1,"vaga 002","role","asc").content().getFirst().role()).isEqualTo("Vaga 002");
+        verifyNoInteractions(spyClient);
+    }
+
+    private br.com.careermatcher.listings.WorkspaceListings testListings(Neo4jClient client,com.github.benmanes.caffeine.cache.Ticker ticker) {
+        return new br.com.careermatcher.listings.WorkspaceListings(client,context.getBean(TestActor.class),context.getBean(PlatformTransactionManager.class),
+                java.time.Duration.ofMinutes(10),java.time.Duration.ofMinutes(2),300,64,ticker);
+    }
+    private br.com.careermatcher.DTOs.crud.CrudDtos.PageView<?> listingPage(br.com.careermatcher.listings.WorkspaceListings listings,
+            br.com.careermatcher.listings.WorkspaceListings.Listing type,int page,int size,String query,String sort,String direction) {
+        return type==br.com.careermatcher.listings.WorkspaceListings.Listing.VACANCIES?listings.vacancies(page,size,query,sort,direction)
+                :listings.candidates(type,page,size,query,sort,direction);
+    }
+    private void seedListing(br.com.careermatcher.listings.WorkspaceListings.Listing type,int count) {
+        String query=type==br.com.careermatcher.listings.WorkspaceListings.Listing.VACANCIES
+                ? "MATCH(co:COMPANY) WHERE id(co)=$company UNWIND range(0,$count-1) AS i CREATE(co)-[:PUBLISHES]->(:VACANCY {seedIndex:i,role:'Vaga '+right('000'+toString(i),3),city:'Recife',seniority:'PLENO',modalidade:'REMOTO'})"
+                : "MATCH(co:COMPANY) WHERE id(co)=$company UNWIND range(0,$count-1) AS i CREATE(c:CANDIDATE {seedIndex:i,name:'Pessoa '+right('000'+toString(i),3),professionalTitle:'Dev',phone:'1199000'})-[:`INTERESTED IN`]->(co) "
+                +(type==br.com.careermatcher.listings.WorkspaceListings.Listing.INTERNAL?"CREATE(c)-[:HAS]->(:RESUME)-[:HasExperience]->(:EXPERIENCE {confirmed:true,currentJob:true,confirmedCompanyId:$company})":"");
+        client.query(query).bind(companyId).to("company").bind(count).to("count").run();
+    }
+
+    @Test void exposesPrimarySkillLimitForBothForms() throws Exception {
+        for (String path : List.of("/api/me/candidate/form-configuration", "/api/careermatcher/candidatos/form-configuration"))
+            mvc.perform(get(path)).andExpect(status().isOk()).andExpect(jsonPath("$.maxSkills").value(3));
+    }
+
+    @Test void searchesSharedCatalogsWithNormalizedQueriesAndBoundedResults() throws Exception {
+        var catalog = context.getBean(CatalogRepository.class);
+        catalog.resolve(GraphSchema.Kind.SKILL, "Java");
+        catalog.resolve(GraphSchema.Kind.SKILL, "JavaScript");
+        catalog.resolve(GraphSchema.Kind.SKILL, "SQL");
+        catalog.resolve(GraphSchema.Kind.LANGUAGE, "Javanês");
+        mvc.perform(get("/api/catalog/skills").param("query", " JAVA ").param("limit", "1"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].name").value("Java"));
+        mvc.perform(get("/api/catalog/skills").param("query", "ava"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(2));
+        mvc.perform(get("/api/catalog/languages").param("query", "java"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$[0].name").value("Javanês"));
+        mvc.perform(get("/api/catalog/skills").param("query", "' MATCH (n) DETACH DELETE n"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
+        mvc.perform(get("/api/catalog/skills").param("limit", "51")).andExpect(status().isBadRequest());
+        mvc.perform(get("/api/catalog/skills").param("query", "a".repeat(101))).andExpect(status().isBadRequest());
+        mvc.perform(get("/api/catalog/skills")).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(3));
+    }
+
+    @Test void paginatesEntireCachedSkillCatalogAndFiltersBeforePagination() throws Exception {
+        var names = java.util.stream.IntStream.range(0, 205).mapToObj(i -> "Skill %03d".formatted(i)).toList();
+        client.query("UNWIND $names AS name CREATE (:SKILL {name:name})").bind(names).to("names").run();
+        var catalog = context.getBean(CatalogRepository.class);
+        var collected = new ArrayList<String>();
+        for (int offset = 0; offset < 220; offset += 20)
+            collected.addAll(catalog.search(GraphSchema.Kind.SKILL, "", 20, offset).stream().map(CatalogRepository.Option::name).toList());
+        assertThat(collected).containsExactlyElementsOf(names);
+        // Later pages and searches read the same cached snapshot, even after an external deletion.
+        client.query("MATCH (n:SKILL) DELETE n").run();
+        mvc.perform(get("/api/catalog/skills").param("offset", "200"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(5))
+                .andExpect(jsonPath("$[0].name").value("Skill 200"));
+        mvc.perform(get("/api/catalog/skills").param("query", "204"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$[0].name").value("Skill 204"));
+        mvc.perform(get("/api/catalog/skills").param("offset", "220"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
+        mvc.perform(get("/api/catalog/skills").param("offset", "-1")).andExpect(status().isBadRequest());
+    }
+
+    @Test void seedsClosedRankedLanguageCatalogIdempotentlyAndReusesSkillVariants() throws Exception {
+        var catalog = context.getBean(CatalogRepository.class);
+        long java = catalog.resolve(GraphSchema.Kind.SKILL, "Java");
+        for (String variant : List.of(" JAVA ", "java", "Ｊａｖａ"))
+            assertThat(catalog.resolve(GraphSchema.Kind.SKILL, variant)).isEqualTo(java);
+        assertThat(catalog.search(GraphSchema.Kind.SKILL, "ＪＡＶＡ", 20)).extracting(CatalogRepository.Option::name).containsExactly("Java");
+        assertThat(catalog.resolve(GraphSchema.Kind.SKILL, "JavaScript")).isNotEqualTo(java);
+        catalog.seedLanguages(); catalog.seedLanguages();
+        var languages = catalog.search(GraphSchema.Kind.LANGUAGE, "", 20);
+        assertThat(languages).hasSize(50);
+        assertThat(languages.getFirst().id()).isEqualTo(1);
+        assertThat(languages.getFirst().name()).isEqualTo("Inglês");
+        assertThat(languages.getLast().id()).isEqualTo(50);
+        assertThat(catalog.resolve(GraphSchema.Kind.LANGUAGE, "English")).isEqualTo(catalog.resolve(GraphSchema.Kind.LANGUAGE, "INGLES"));
+        assertThatThrownBy(() -> catalog.resolve(GraphSchema.Kind.LANGUAGE, "Inventado"))
+                .isInstanceOf(ValidationException.class);
+        assertThat(count("MATCH (n:LANGUAGE) RETURN count(n) AS count")).isEqualTo(50);
+        catalog.search(GraphSchema.Kind.SKILL, "Rust", 20);
+        new TransactionTemplate(context.getBean(PlatformTransactionManager.class)).execute(status -> {
+            catalog.resolve(GraphSchema.Kind.SKILL, "Rust");
+            assertThat(catalog.search(GraphSchema.Kind.SKILL, "Rust", 20)).isEmpty();
+            return null;
+        });
+        assertThat(catalog.search(GraphSchema.Kind.SKILL, "Rust", 20)).hasSize(1);
+        new TransactionTemplate(context.getBean(PlatformTransactionManager.class)).execute(status -> {
+            catalog.resolve(GraphSchema.Kind.SKILL, "RollbackOnly"); status.setRollbackOnly(); return null;
+        });
+        assertThat(catalog.search(GraphSchema.Kind.SKILL, "RollbackOnly", 20)).isEmpty();
+    }
+
+    @Test void cachesBothCatalogsAndReloadsOnlyAfterExpiry() {
+        var catalog = context.getBean(CatalogRepository.class);
+        var immediateExpiry = new CatalogRepository(client, java.time.Duration.ofNanos(1), java.time.Duration.ofNanos(1));
+        catalog.resolve(GraphSchema.Kind.SKILL, "Java");
+        catalog.seedLanguages();
+        for (var repository : List.of(catalog, immediateExpiry)) {
+            assertThat(repository.search(GraphSchema.Kind.SKILL, "", 50)).hasSize(1);
+            assertThat(repository.search(GraphSchema.Kind.LANGUAGE, "", 50)).hasSize(50);
+        }
+        // External changes are visible only after expiry; cache hits do not query Neo4j.
+        client.query("CREATE (:SKILL {name:'Kotlin'})").run();
+        client.query("MATCH (n:LANGUAGE {catalogId:50}) REMOVE n.catalogId").run();
+        assertThat(catalog.search(GraphSchema.Kind.SKILL, "kotlin", 50)).isEmpty();
+        assertThat(catalog.search(GraphSchema.Kind.LANGUAGE, "", 50)).hasSize(50);
+        assertThat(immediateExpiry.search(GraphSchema.Kind.SKILL, "kotlin", 50)).hasSize(1);
+        assertThat(immediateExpiry.search(GraphSchema.Kind.LANGUAGE, "", 50)).hasSize(49);
+    }
+
+    @Test void seedsLanguagesWithoutReplacingLegacyNodesOrRelationships() {
+        long existing = client.query("CREATE (r:RESUME)-[:SPEAKS]->(n:LANGUAGE {name:'English'}) RETURN id(n) AS id")
+                .fetchAs(Long.class).one().orElseThrow();
+        var catalog = context.getBean(CatalogRepository.class);
+        catalog.seedLanguages();
+        assertThat(catalog.resolve(GraphSchema.Kind.LANGUAGE, "Inglês")).isEqualTo(existing);
+        assertThat(count("MATCH (:RESUME)-[:SPEAKS]->(:LANGUAGE {catalogId:1}) RETURN count(*) AS count")).isEqualTo(1);
+        assertThat(count("MATCH (n:LANGUAGE) RETURN count(n) AS count")).isEqualTo(50);
+    }
+
+    @Test void verifiesMultipleEmployeesWithSharedCompanyLinkAndPreservesItOnProfileSave() throws Exception {
+        var service = context.getBean(br.com.careermatcher.relocation.RelocationService.class);
+        var actor = context.getBean(TestActor.class);
+        var input = fixture("candidate");
+        ((ObjectNode)input.at("/resume/experiences/0")).put("startDate","2024-01-01").put("currentJob",true);
+        var candidate = registerInterested(input);
+        assertThat(candidate.resume().experiences().getFirst().confirmed()).isFalse();
+        var link = service.generate();
+        assertThat(service.list(0,20,"").totalElements()).isZero();
+        assertThat(candidates.findPage(0,10).totalElements()).isEqualTo(1);
+        actor.candidate(candidate.id());
+        assertThat(service.preview(link.token()).companyName()).isEqualTo("Test");
+        long experience = Long.parseLong(candidate.resume().experiences().getFirst().id());
+        service.confirm(link.token(), experience);
+        service.confirm(link.token(), experience); // same candidate may retry safely
+        assertThat(candidates.findCandidate(candidate.id()).resume().experiences().getFirst().confirmed()).isTrue();
+        candidates.patch(candidate.id(), object("{\"resume\":{\"skills\":[]}}"));
+        assertThat(candidates.findCandidate(candidate.id()).resume().experiences().getFirst().confirmed()).isTrue();
+        var forged = input.deepCopy();
+        ((ObjectNode)forged.at("/resume/experiences/0")).put("confirmed", true);
+        assertThatThrownBy(() -> candidates.patch(candidate.id(), forged)).isInstanceOf(ValidationException.class);
+        actor.staff(companyId);
+        assertThat(service.list(0,20,"ana").totalElements()).isEqualTo(1);
+        assertThat(candidates.findPage(0,10).totalElements()).isZero();
+        long otherCompany = client.query("CREATE (c:COMPANY {name:'Other'}) RETURN id(c) AS id").fetchAs(Long.class).one().orElseThrow();
+        actor.staff(otherCompany);
+        assertThat(service.list(0,20,"").totalElements()).isZero();
+        actor.staff(companyId);
+        var other = registerInterested(input);
+        actor.candidate(other.id());
+        assertThat(service.preview(link.token()).companyName()).isEqualTo("Test");
+        service.confirm(link.token(), Long.parseLong(other.resume().experiences().getFirst().id()));
+        assertThat(candidates.findCandidate(other.id()).resume().experiences().getFirst().confirmed()).isTrue();
+        actor.staff(companyId);
+        assertThat(service.list(0,20,"").totalElements()).isEqualTo(2);
+        actor.candidate(candidate.id());
+        ((ObjectNode)input.at("/resume/experiences/0")).put("currentJob",false).put("endDate","2025-01-01");
+        candidates.patch(candidate.id(), input);
+        assertThat(candidates.findCandidate(candidate.id()).resume().experiences().getFirst().confirmed()).isFalse();
+        actor.staff(companyId);
+        assertThat(service.list(0,20,"").totalElements()).isEqualTo(1);
+        assertThat(candidates.findPage(0,10).totalElements()).isEqualTo(1);
+    }
+
+    @Test void internalCollaboratorListSearchesAllVisibleColumnsAndSortsBeforePagination() throws Exception {
+        client.query("""
+            UNWIND [
+              {name:'Bruno',title:'Qualidade',phone:'119111',confirmed:true,current:true,company:$company},
+              {name:'Ana',title:'Design',phone:'219222',confirmed:true,current:true,company:$company},
+              {name:'Carla',title:'Qualidade',phone:'319333',confirmed:true,current:true,company:$company},
+              {name:'Oculto',title:'Qualidade',phone:'419444',confirmed:false,current:true,company:$company},
+              {name:'Ex-colaborador',title:'Qualidade',phone:'519555',confirmed:true,current:false,company:$company},
+              {name:'Outra empresa',title:'Qualidade',phone:'619666',confirmed:true,current:true,company:-999}
+            ] AS item
+            CREATE (c:CANDIDATE {name:item.name,professionalTitle:item.title,phone:item.phone})-[:HAS]->(r:RESUME)
+            CREATE (r)-[:HasExperience]->(:EXPERIENCE {confirmed:item.confirmed,currentJob:item.current,confirmedCompanyId:item.company})
+            """).bind(companyId).to("company").run();
+        var service=context.getBean(br.com.careermatcher.relocation.RelocationService.class);
+        assertThat(service.list(0,10,"Qualidade").totalElements()).isEqualTo(2);
+        assertThat(service.list(0,10,"219222").content()).extracting(br.com.careermatcher.DTOs.crud.CrudDtos.CandidateSummary::name).containsExactly("Ana");
+        assertThat(service.list(0,1,"","name","asc").content()).extracting(br.com.careermatcher.DTOs.crud.CrudDtos.CandidateSummary::name).containsExactly("Ana");
+        var page=service.list(1,1,"","name","desc");
+        assertThat(page.totalElements()).isEqualTo(3);
+        assertThat(page.totalPages()).isEqualTo(3);
+        assertThat(page.content()).extracting(br.com.careermatcher.DTOs.crud.CrudDtos.CandidateSummary::name).containsExactly("Bruno");
+        assertThat(service.list(0,10,"","professionalTitle","asc").content().getFirst().name()).isEqualTo("Ana");
+        assertThatThrownBy(() -> service.list(0,10,"","phone","asc")).isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+        assertThatThrownBy(() -> service.list(0,10,"","name","invalid")).isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+    }
+
+    @Test void sharedVerificationExpiresExactlyAfter24Hours() throws Exception {
+        var actor=context.getBean(TestActor.class);
+        var input=fixture("candidate");
+        ((ObjectNode)input.at("/resume/experiences/0")).put("startDate","2024-01-01").put("currentJob",true);
+        var candidate=registerInterested(input);
+        var start=java.time.Instant.parse("2026-11-05T12:00:00Z");
+        var service=new br.com.careermatcher.relocation.RelocationService(client,actor,java.time.Clock.fixed(start,java.time.ZoneOffset.UTC),context.getBean(br.com.careermatcher.listings.WorkspaceListings.class));
+        var link=service.generate();
+        assertThat(link.expiresAt()).isEqualTo(start.plus(java.time.Duration.ofHours(24)));
+        actor.candidate(candidate.id());
+        var before=new br.com.careermatcher.relocation.RelocationService(client,actor,java.time.Clock.fixed(link.expiresAt().minusMillis(1),java.time.ZoneOffset.UTC),context.getBean(br.com.careermatcher.listings.WorkspaceListings.class));
+        assertThat(before.preview(link.token()).companyName()).isEqualTo("Test");
+        var expired=new br.com.careermatcher.relocation.RelocationService(client,actor,java.time.Clock.fixed(link.expiresAt(),java.time.ZoneOffset.UTC),context.getBean(br.com.careermatcher.listings.WorkspaceListings.class));
+        assertThatThrownBy(() -> expired.preview(link.token())).isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+        assertThatThrownBy(() -> expired.confirm(link.token(),Long.parseLong(candidate.resume().experiences().getFirst().id())))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+    }
+
+    @Test void verificationRejectsExpiredLinksAndOtherCandidatesExperiences() throws Exception {
+        var service = context.getBean(br.com.careermatcher.relocation.RelocationService.class);
+        var actor = context.getBean(TestActor.class);
+        var input = fixture("candidate");
+        ((ObjectNode)input.at("/resume/experiences/0")).put("startDate","2024-01-01").put("currentJob",true);
+        var first = registerInterested(input);
+        var second = registerInterested(input);
+        var link = service.generate();
+        actor.candidate(first.id());
+        assertThatThrownBy(() -> service.confirm(link.token(),Long.parseLong(second.resume().experiences().getFirst().id())))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+        client.query("MATCH (v:EMPLOYEE_VERIFICATION) SET v.expiresAt=0").run();
+        assertThatThrownBy(() -> service.confirm(link.token(),Long.parseLong(first.resume().experiences().getFirst().id())))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+        assertThatThrownBy(() -> service.preview("invalid"))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+    }
+
     @AfterAll void stop() { if (context != null) context.close(); if (database != null) database.close(); }
     @BeforeEach void clear() {
         client.query("MATCH (n) DETACH DELETE n").run();
+        context.getBean(CatalogRepository.class).clearCaches();
+        context.getBean(br.com.careermatcher.listings.WorkspaceListings.class).clearCaches();
         companyId = client.query("CREATE (c:COMPANY {name:'Test'}) RETURN id(c) AS id")
                 .fetchAs(Long.class).mappedBy((types, row) -> row.get("id").asLong()).one().orElseThrow();
         context.getBean(TestActor.class).staff(companyId);
@@ -63,13 +455,14 @@ class CrudIntegrationTest {
     }
 
     @Configuration @EnableTransactionManagement
-    @Import({GraphCrudRepository.class, CatalogRepository.class, TextSanitizer.class, GraphValidations.class,
+    @Import({br.com.careermatcher.listings.WorkspaceListings.class, CompanyInterestRepository.class, VacancyApplicationRepository.class, br.com.careermatcher.relocation.RelocationService.class, ResumeSkillPolicy.class, GraphCrudRepository.class, CatalogRepository.class, TextSanitizer.class, GraphValidations.class,
             CandidatoValidations.class, VagaValidations.class, CandidatoService.class, VagaService.class,
             CompanyService.class})
     static class Config extends AbstractNeo4jConfig {
         @Bean @Override public Driver driver() { return GraphDatabase.driver(database.boltURI(), AuthTokens.none()); }
         @Override protected Collection<String> getMappingBasePackages() { return List.of("br.com.careermatcher.models"); }
         @Bean public ObjectMapper mapper() { return new ObjectMapper().findAndRegisterModules().disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS); }
+        @Bean public java.time.Clock clock() { return java.time.Clock.systemUTC(); }
         @Bean public TestActor actor() { return new TestActor(); }
         @Bean public EmailService email() { return mock(EmailService.class); }
     }
@@ -285,6 +678,35 @@ class CrudIntegrationTest {
         assertThat(count("MATCH (:CANDIDATE)-[:HAS]->(:RESUME) RETURN count(*) AS count")).isPositive();
         assertThat(count("MATCH ()-[:`INTERESTED IN`]->() RETURN count(*) AS count")).isZero();
         assertThat(count("MATCH (n:SKILL) RETURN count(n) AS count")).isEqualTo(2);
+    }
+
+    @Test void roundTripsExperienceDatesAndCurrentJobThroughCandidateAndBatchReads() throws Exception {
+        var input = fixture("candidate");
+        var experience = (ObjectNode)input.at("/resume/experiences/0");
+        experience.remove("durationMonths");
+        experience.put("startDate", "2023-01-15").put("endDate", "2025-01-15").put("currentJob", false);
+        var candidate = registerInterested(input);
+        var saved = candidate.resume().experiences().getFirst();
+        assertThat(saved.startDate()).isEqualTo(java.time.LocalDate.of(2023, 1, 15));
+        assertThat(saved.endDate()).isEqualTo(java.time.LocalDate.of(2025, 1, 15));
+        assertThat(saved.durationMonths()).isEqualTo(24);
+        mvc.perform(get("/api/careermatcher/candidato/" + candidate.id())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.resume.experiences[0].startDate").value("2023-01-15"));
+        var graph = context.getBean(GraphCrudRepository.class);
+        assertThat(graph.findByIds(GraphSchema.Kind.CANDIDATE, List.of(candidate.id()), 10).getFirst())
+                .isEqualTo(graph.find(GraphSchema.Kind.CANDIDATE, candidate.id()));
+        context.getBean(TestActor.class).candidate(candidate.id());
+        experience.put("currentJob", true);
+        var patch = object("{}");
+        patch.set("resume", input.path("resume"));
+        var updated = candidates.patch(candidate.id(), patch).resume().experiences().getFirst();
+        assertThat(updated.endDate()).isNull();
+        assertThat(updated.currentJob()).isTrue();
+        assertThat(updated.durationMonths()).isEqualTo(br.com.careermatcher.models.ExperiencePeriod.months(saved.startDate(), java.time.LocalDate.now(java.time.ZoneOffset.UTC)));
+        // Date-only Neo4j properties are also supported on read.
+        client.query("MATCH (e:EXPERIENCE) WHERE id(e)=$id SET e.startDate=date(e.startDate)")
+                .bind(Long.parseLong(updated.id())).to("id").run();
+        assertThat(candidates.findCandidate(candidate.id()).resume().experiences().getFirst().startDate()).isEqualTo(saved.startDate());
     }
 
     @Test void omitsLegacyVacancyExperienceSkillsWhilePreservingCandidateSkills() throws Exception {
@@ -530,11 +952,12 @@ class CrudIntegrationTest {
                 .andExpect(status().isOk()).andReturn();
         assertThat(count("MATCH (n) RETURN count(n) AS count")).isEqualTo(before);
         JsonNode vacancyData = mapper.readTree(vacancySuggestion.getResponse().getContentAsString()).path("data");
+        assertThat(vacancyData.path("additionalInfo").asText()).isEqualTo("Benefícios extraídos");
         var saved = api.perform(post("/api/careermatcher/vagas").contentType(MediaType.APPLICATION_JSON).content(vacancyData.toString()))
-                .andExpect(status().isCreated()).andExpect(jsonPath("$.additionalInfo").value("<p>Benefícios extraídos</p>"))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.additionalInfo").value("Benefícios extraídos"))
                 .andReturn();
         long id = mapper.readTree(saved.getResponse().getContentAsString()).path("id").asLong();
-        assertThat(vacancies.find(id).additionalInfo()).isEqualTo("<p>Benefícios extraídos</p>");
+        assertThat(vacancies.find(id).additionalInfo()).isEqualTo("Benefícios extraídos");
         provider.verify();
     }
 
@@ -543,6 +966,9 @@ class CrudIntegrationTest {
         client.query("MATCH (c:CANDIDATE), (company:COMPANY) WHERE id(c)=$candidate AND id(company)=$company "
                 + "MERGE (c)-[:`INTERESTED IN`]->(company)")
                 .bindAll(Map.of("candidate", candidate.id(), "company", companyId)).run();
+        context.getBean(br.com.careermatcher.listings.WorkspaceListings.class).invalidateAfterCommit(companyId,
+                br.com.careermatcher.listings.WorkspaceListings.Listing.TALENT_POOL,
+                br.com.careermatcher.listings.WorkspaceListings.Listing.INTERNAL);
         return candidate;
     }
 

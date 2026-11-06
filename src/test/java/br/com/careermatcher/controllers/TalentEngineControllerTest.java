@@ -51,7 +51,7 @@ class TalentEngineControllerTest {
         verifyNoInteractions(repository, matching);
         tasks.getFirst().run();
         verify(repository).findByIds(br.com.careermatcher.crud.GraphSchema.Kind.VACANCY, List.of(10L), 200);
-        verify(repository).findByIds(br.com.careermatcher.crud.GraphSchema.Kind.CANDIDATE, List.of(1L, 2L), 200);
+        verify(repository).findTalentPoolByIds(List.of(1L, 2L), 200);
         verify(matching).generateShortlists(anyList(), anyList(), eq(10), eq(.65), eq(5.0));
     }
 
