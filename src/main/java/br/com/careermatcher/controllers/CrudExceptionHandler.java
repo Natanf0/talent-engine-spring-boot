@@ -10,7 +10,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.server.ResponseStatusException;
 import java.util.List;
 
-@RestControllerAdvice(assignableTypes = {CandidatoController.class, VagaController.class, MatchingExecutionController.class})
+@RestControllerAdvice(assignableTypes = {CandidateSimilarityController.class, CandidatoController.class, VagaController.class, MatchingExecutionController.class})
 public class CrudExceptionHandler {
     public record ErrorResponse(int status, String message, List<FieldError> errors) {}
     @ExceptionHandler(ValidationException.class)

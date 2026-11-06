@@ -355,6 +355,14 @@ Nesta atualização, publique primeiro o frontend usando apenas texto para vagas
 Documentação do provedor: https://api-docs.deepseek.com/ e
 https://api-docs.deepseek.com/guides/json_mode/ . A chamada usa `/chat/completions`, JSON,
 sem streaming, sem raciocínio adicional e sem novas tentativas automáticas.
+A conexão espera até 10s (`DEEPSEEK_CONNECT_TIMEOUT`) e a leitura até 90s
+(`DEEPSEEK_READ_TIMEOUT`), mantendo margem para o proxy de 110s. Atualize também
+os valores no arquivo de ambiente do servidor caso já estejam definidos: variáveis
+externas prevalecem sobre os novos padrões. Esses limites não garantem disponibilidade
+do provedor. Para operações que excedam o tempo do proxy, a alternativa é processar
+em segundo plano e consultar o resultado; repetir chamadas síncronas não elimina esse limite.
+O prompt pede JSON compacto e descrições em texto simples. Tags HTML eventualmente
+retornadas são convertidas para texto com quebras de linha antes de preencher o formulário.
 
 ### Contrato HTTP
 

@@ -70,7 +70,8 @@ public class MatchingResponseMapper {
         }
         return new ExperienceDetails(id(experience.getId()), experience.getRole(), experience.getCompanyName(),
                 experience.getDescription(), experience.getDurationMonths(), experience.getSeniority(),
-                map(experience.getSkillsRelatedToExperience(), this::mapExperienceSkill));
+                map(experience.getSkillsRelatedToExperience(), this::mapExperienceSkill),
+                experience.getStartDate(), experience.getEndDate(), experience.getCurrentJob(), Boolean.TRUE.equals(experience.getConfirmed()));
     }
 
     private UndergraduateDetails mapUndergraduate(Undergraduate undergraduate) {

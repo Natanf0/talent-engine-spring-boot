@@ -68,6 +68,7 @@ public class SecurityConfiguration {
                 .authorizeHttpRequests(auth->auth
                     .requestMatchers(HttpMethod.POST,"/api/auth/login","/api/auth/register/candidate","/api/auth/invitations/validate","/api/auth/invitations/complete").permitAll()
                     .requestMatchers("/actuator/health").permitAll()
+                    .requestMatchers(HttpMethod.GET,"/api/catalog/skills","/api/catalog/languages").hasAnyRole("CANDIDATO","ADMINISTRADOR","GERENTE","RECRUTADOR")
                     .requestMatchers("/api/admin/**").hasRole("ADMINISTRADOR")
                     .requestMatchers("/api/me/**").hasRole("CANDIDATO")
                     .requestMatchers("/api/careermatcher/**","/api/matching/**").hasAnyRole("ADMINISTRADOR","GERENTE","RECRUTADOR")

@@ -102,6 +102,19 @@ class CrudValidationsTest {
         }
     }
 
+    @Test void rejectsUnlistedLanguagesAndDuplicateLanguageAliases() throws Exception {
+        assertInvalid(LANGUAGE, object("{\"name\":\"Inventado\"}"), "name");
+        ObjectNode resume = object("""
+                {"languages":[
+                  {"level":1,"language":{"name":"English"}},
+                  {"level":2,"language":{"name":" INGLÊS "}}
+                ]}
+                """);
+        assertInvalid(RESUME, resume, "languages[1]");
+        for (String alias : new String[]{"Inglês", "INGLES", "English"})
+            assertThat(validation.validate(LANGUAGE, object("{}").put("name", alias)).path("name").asText()).isEqualTo(alias);
+    }
+
     @Test void patchPreservesMissingFieldsAndTreatsNullAndArraysExplicitly() throws Exception {
         ObjectNode current = candidate();
         current.put("id", 1).put("phone", "123");
@@ -114,6 +127,80 @@ class CrudValidationsTest {
         assertThat(candidates.patch(current, object("{\"resume\":null}")).has("resume")).isFalse();
         assertThatThrownBy(() -> candidates.patch(current, object("{\"name\":null}"))).isInstanceOf(ValidationException.class);
         assertThatThrownBy(() -> candidates.patch(current, object("{\"resume\":{\"id\":10}}"))).isInstanceOf(ValidationException.class);
+    }
+
+    @Test void limitsOnlyResumeSkillsAndUsesConfiguredMaximumOnPatch() throws Exception {
+        ObjectNode resume = object("{}");
+        var skills = resume.putArray("skills");
+        for (String name : new String[]{"Java", "SQL", "Python"})
+            skills.addObject().put("weight", 1).putObject("skill").put("name", name);
+        assertThat(validation.validate(RESUME, resume).path("skills")).hasSize(3);
+        skills.addObject().put("weight", 1).putObject("skill").put("name", "Go");
+        assertInvalid(RESUME, resume, "skills");
+        var configured = new GraphValidations(texts, new ResumeSkillPolicy(4));
+        assertThat(configured.validate(RESUME, resume).path("skills")).hasSize(4);
+        ObjectNode candidate = candidate();
+        candidate.set("resume", resume);
+        assertThatThrownBy(() -> new CandidatoValidations(validation).patch(candidate, object("{}")))
+                .isInstanceOfSatisfying(ValidationException.class, e -> assertThat(e.errors())
+                        .extracting(ValidationException.FieldError::field).contains("resume.skills"));
+        assertThatThrownBy(() -> new ResumeSkillPolicy(0)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test void rejectsDuplicatesWithinEachSourceButPermitsReuseAcrossSources() throws Exception {
+        ObjectNode experience = object("{\"role\":\"Dev\",\"durationMonths\":12,\"seniority\":\"PLENO\"}");
+        ObjectNode project = object("{\"title\":\"App\",\"startDate\":\"2026-01-01T00:00:00Z\"}");
+        var skills = object("{}").putArray("skills");
+        for (String name : new String[]{"Java", "SQL", "Python", "Go"})
+            skills.addObject().put("weight", 1).putObject("skill").put("name", name);
+        experience.set("skills", skills);
+        project.set("skills", skills);
+        assertThat(validation.validate(EXPERIENCE, experience).path("skills")).hasSize(4);
+        assertThat(validation.validate(PROJECT, project).path("skills")).hasSize(4);
+        ObjectNode resume = object("{}");
+        resume.putArray("experiences").add(experience).add(experience.deepCopy());
+        var education = resume.putObject("undergraduate").put("field", "Computação");
+        education.putArray("projects").add(project).add(project.deepCopy());
+        resume.putArray("skills").add(skills.get(0).deepCopy());
+        assertThatCode(() -> validation.validate(RESUME, resume)).doesNotThrowAnyException();
+        skills.addObject().put("weight", 2).putObject("skill").put("name", " <b>JAVA</b> ");
+        assertInvalid(EXPERIENCE, experience, "skills[4]");
+        assertInvalid(PROJECT, project, "skills[4]");
+    }
+
+    @Test void calculatesCandidateDurationAndClearsEndForCurrentJob() throws Exception {
+        ObjectNode experience = object("""
+                {"role":"Dev","seniority":"PLENO","startDate":"2024-01-15","endDate":"2025-02-14","durationMonths":999}
+                """);
+        assertThat(validation.validate(EXPERIENCE, experience).path("durationMonths").intValue()).isEqualTo(12);
+        experience.put("endDate", "2024-01-20");
+        var shortExperience = validation.validate(EXPERIENCE, experience);
+        assertThat(shortExperience.path("durationMonths").intValue()).isZero();
+        assertThat(validation.validate(EXPERIENCE, shortExperience)).isEqualTo(shortExperience);
+        experience.put("startDate", java.time.LocalDate.now(java.time.ZoneOffset.UTC).minusMonths(2).toString());
+        experience.put("currentJob", true).put("endDate", "ignored old value");
+        var current = validation.validate(EXPERIENCE, experience);
+        assertThat(current.has("endDate")).isFalse();
+        assertThat(current.path("durationMonths").intValue()).isEqualTo(2);
+        experience.put("currentJob", false).remove("endDate");
+        assertInvalid(EXPERIENCE, experience, "endDate");
+    }
+
+    @Test void validatesDateOnlyPeriodsAndKeepsVacancyMonths() throws Exception {
+        ObjectNode experience = object("{\"role\":\"Dev\",\"seniority\":\"PLENO\",\"endDate\":\"2025-01-01\"}");
+        for (String date : new String[]{"2024-02-30", "2024-01-01T00:00:00Z", "01/01/2024"})
+            assertInvalid(EXPERIENCE, experience.put("startDate", date), "startDate");
+        experience.put("startDate", "2025-02-01");
+        assertInvalid(EXPERIENCE, experience, "endDate");
+        experience.put("currentJob", true).put("startDate", "2999-01-01");
+        assertInvalid(EXPERIENCE, experience, "startDate");
+        var vacancy = object("""
+                {"role":"Dev","city":"Natal","seniority":"PLENO","modalidade":"REMOTO",
+                "experienceRequirement":{"experience":{"role":"Dev","seniority":"PLENO","durationMonths":24}}}
+                """);
+        assertThat(validation.validate(VACANCY, vacancy).at("/experienceRequirement/experience/durationMonths").intValue()).isEqualTo(24);
+        ((ObjectNode)vacancy.at("/experienceRequirement/experience")).put("startDate", "2024-01-01");
+        assertInvalid(VACANCY, vacancy, "experienceRequirement.experience.startDate");
     }
 
     private ObjectNode candidate() throws Exception { return object("{\"name\":\"Ana\",\"professionalTitle\":\"Dev\"}"); }

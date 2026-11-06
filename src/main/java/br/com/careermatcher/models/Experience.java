@@ -11,6 +11,8 @@ import org.springframework.data.neo4j.core.schema.Node;
 import org.springframework.data.neo4j.core.schema.Relationship;
 
 import java.util.List;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 
 @Node("EXPERIENCE")
 @Getter
@@ -22,6 +24,17 @@ public class Experience {
     private String companyName;
     private String description;
     private Integer durationMonths;
+    @Setter private LocalDate startDate;
+    @Setter private LocalDate endDate;
+    @Setter private Boolean currentJob;
+    @Setter private Boolean confirmed = false;
+
+    public Integer getDurationMonths() {
+        if (startDate != null && (Boolean.TRUE.equals(currentJob) || endDate != null))
+            return ExperiencePeriod.months(startDate, Boolean.TRUE.equals(currentJob) ? LocalDate.now(ZoneOffset.UTC) : endDate);
+        return durationMonths;
+    }
+
     private SENIORITY seniority;
     @Relationship(type = "DEVELOPS_SKILL", direction = Relationship.Direction.OUTGOING)
     private List<ExperienceDevelopsSkill> skillsRelatedToExperience;

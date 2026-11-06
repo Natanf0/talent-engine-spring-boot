@@ -1,0 +1,8 @@
+Ranking congelado: total de falantes L1 + L2, Ethnologue 2025.
+Transcrição pública consultada em 2026-11-04:
+https://www.jetpunk.com/user-quizzes/2026529/top-200-languages-ethnologue-2025
+Metodologia do editor: https://shop.ethnologue.com/products/2026-ethnologue-200
+A edição 2026 completa não foi obtida; esta lista não é apresentada como ranking 2026.
+Os nomes foram traduzidos para português. As variantes linguísticas seguem a lista fonte.
+catalogId é a posição nesta edição, não o id interno do Neo4j.
+Nós legados não reconhecidos não são apagados; deixam de ser oferecidos para novos cadastros.

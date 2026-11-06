@@ -68,6 +68,10 @@ public class SelectedParticipantsMapper {
                 source.durationMonths(), source.seniority(), safe(source.skills()).stream()
                 .map(item -> new ExperienceDevelopsSkill(null, item.weight(), skill(item.skill()))).toList());
         result.setId(id(source.id()));
+        result.setStartDate(source.startDate());
+        result.setEndDate(source.endDate());
+        result.setCurrentJob(source.currentJob());
+        result.setConfirmed(source.confirmed());
         return result;
     }
 

@@ -46,6 +46,7 @@ class AuthFlowIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper mapper;
     @Autowired Neo4jClient client;
+    @Autowired br.com.careermatcher.listings.WorkspaceListings workspaceListings;
     @Autowired JwtEncoder encoder;
     @Autowired JwtDecoder decoder;
     @Autowired org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor matchingExecutor;
@@ -73,6 +74,7 @@ class AuthFlowIntegrationTest {
     }
     @BeforeEach void prepare() {
         client.query("MATCH (n) DETACH DELETE n").run();
+        workspaceListings.clearCaches();
         when(clock.instant()).thenReturn(NOW);
         companyA=company("A"); companyB=company("B");
         seedStaff("admin-a","admin-a@example.com","ADMINISTRADOR",companyA);
@@ -83,6 +85,19 @@ class AuthFlowIntegrationTest {
         doAnswer(call->{ String body=call.getArgument(2); inviteToken.set(body.substring(body.indexOf("#token=")+7)); return null; })
                 .when(email).sendEmail(anyString(),anyString(),anyString());
     }
+    @Test void catalogSearchRequiresAuthenticationAndAllowsCandidateAndStaffRoles() throws Exception {
+        client.query("CREATE (:SKILL {name:'Java', normalizedName:'java'}), (:LANGUAGE {name:'Português', normalizedName:'português', catalogId:8, catalogName:'Português'})").run();
+        mvc.perform(post("/api/auth/register/candidate").contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(Map.of("name", "Ana", "professionalTitle", "Dev",
+                        "email", "catalog@example.com", "password", PASSWORD)))).andExpect(status().isCreated());
+        for (String path : List.of("/api/catalog/skills", "/api/catalog/languages")) {
+            mvc.perform(get(path)).andExpect(status().isUnauthorized());
+            for (String emailAddress : List.of("catalog@example.com", "admin-a@example.com", "recruiter@example.com", "manager@example.com"))
+                mvc.perform(get(path).header("Authorization", "Bearer " + login(emailAddress)))
+                        .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1));
+        }
+    }
+
     @Test void companyNamesAreReturnedInLoginAndRestoredSession() throws Exception {
         for (String emailAddress : List.of("admin-a@example.com", "recruiter@example.com", "manager@example.com", "admin-b@example.com")) {
             String expected=emailAddress.equals("admin-b@example.com")?"B":"A";

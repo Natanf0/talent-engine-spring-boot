@@ -140,8 +140,8 @@ class SeededGraphIntegrationTest {
 
         var validations = new GraphValidations(new TextSanitizer());
         var candidates = new CandidatoService(
-                graph, new CandidatoValidations(validations), mapper);
-        var vacancies = new VagaService(graph, new VagaValidations(validations), mapper);
+                graph, new CandidatoValidations(validations), mapper, org.mockito.Mockito.mock(br.com.careermatcher.listings.WorkspaceListings.class));
+        var vacancies = new VagaService(graph, new VagaValidations(validations), mapper, org.mockito.Mockito.mock(br.com.careermatcher.listings.WorkspaceListings.class),actor);
         var candidate = candidates.findCandidate(firstId("CANDIDATE"));
         long vacancyId = client.query("MATCH (c:COMPANY)-[:PUBLISHES]->(v:VACANCY) "
                         + "WHERE id(c)=$companyId RETURN id(v) AS id ORDER BY id LIMIT 1")

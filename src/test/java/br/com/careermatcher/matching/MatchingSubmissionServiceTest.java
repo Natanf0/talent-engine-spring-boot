@@ -116,7 +116,7 @@ class MatchingSubmissionServiceTest {
                     .get(10, TimeUnit.SECONDS)).isNull();
             assertThat(deployment.status().pendingMatchings()).isZero();
             assertThat(observed).containsExactly(10L, 20L, 20L);
-            verify(repository, times(1)).findByIds(eq(CANDIDATE), anyList(), anyInt());
+            verify(repository, times(1)).findTalentPoolByIds(anyList(), anyInt());
             verify(matching, times(1)).generateShortlists(anyList(), anyList(), anyInt(), anyDouble(), anyDouble());
         } finally {
             release.countDown();

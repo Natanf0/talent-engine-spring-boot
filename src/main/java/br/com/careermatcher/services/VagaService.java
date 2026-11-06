@@ -20,10 +20,14 @@ public class VagaService {
     private final GraphCrudRepository repository;
     private final VagaValidations validations;
     private final ObjectMapper mapper;
+    private final br.com.careermatcher.listings.WorkspaceListings listings;
+    private final br.com.careermatcher.security.CurrentActor actor;
 
     public VacancyView create(ObjectNode input) {
         ObjectNode clean = validations.validate(input);
-        return view(repository.find(VACANCY, repository.create(VACANCY, clean)));
+        var created = view(repository.find(VACANCY, repository.create(VACANCY, clean)));
+        listings.invalidateCurrentAfterCommit(br.com.careermatcher.listings.WorkspaceListings.Listing.VACANCIES);
+        return created;
     }
     public VacancyView patch(long id, ObjectNode patch) {
         repository.lock(VACANCY, id);
@@ -31,6 +35,7 @@ public class VagaService {
         Set<String> changed = new HashSet<>();
         patch.fieldNames().forEachRemaining(changed::add);
         repository.update(VACANCY, id, clean, changed);
+        listings.invalidateCurrentAfterCommit(br.com.careermatcher.listings.WorkspaceListings.Listing.VACANCIES);
         return view(repository.find(VACANCY, id));
     }
     @Transactional(readOnly = true)
@@ -39,14 +44,15 @@ public class VagaService {
     public VacancyView find(long id) { return view(repository.find(VACANCY, id)); }
     @Transactional(readOnly = true)
     public VacancyView findPublic(long id) { return view(repository.findPublicVacancy(id)); }
-    public void delete(long id) { repository.lock(VACANCY, id); repository.delete(VACANCY, id); }
+    public void delete(long id) { repository.lock(VACANCY, id); repository.delete(VACANCY, id); listings.invalidateCurrentAfterCommit(br.com.careermatcher.listings.WorkspaceListings.Listing.VACANCIES); }
     private VacancyView view(ObjectNode data) { return mapper.convertValue(data, VacancyView.class); }
-    @Transactional(readOnly = true)
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public PageView<VacancySummary> findPage(int page, int size) {
         return findPage(page, size, null, null, "asc");
     }
-    @Transactional(readOnly = true)
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public PageView<VacancySummary> findPage(int page, int size, String search, String sort, String direction) {
+        if (actor.user().role().isStaff()) return listings.vacancies(page,size,search,sort,direction);
         GraphCrudRepository.validatePage(page, size);
         GraphCrudRepository.validateSort(VACANCY, sort, direction);
         long total = repository.count(VACANCY, search);

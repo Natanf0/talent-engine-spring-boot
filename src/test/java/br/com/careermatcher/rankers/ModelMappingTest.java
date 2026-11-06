@@ -20,6 +20,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ModelMappingTest {
 
     @Test
+    void experienceDurationUsesDatesAndCurrentDayInsteadOfStaleStoredMonths() {
+        var experience = new Experience("Dev", 999, br.com.careermatcher.enums.SENIORITY.PLENO);
+        experience.setStartDate(java.time.LocalDate.of(2024, 1, 15));
+        experience.setEndDate(java.time.LocalDate.of(2025, 1, 14));
+        assertThat(experience.getDurationMonths()).isEqualTo(11);
+        experience.setStartDate(java.time.LocalDate.now(java.time.ZoneOffset.UTC).minusMonths(3));
+        experience.setCurrentJob(true);
+        assertThat(experience.getDurationMonths()).isEqualTo(3);
+    }
+
+    @Test
     void relationshipPropertyUsesRelationshipId() throws NoSuchFieldException {
         assertThat(CandidateLanguage.class.getDeclaredField("id").getAnnotation(RelationshipId.class))
                 .isNotNull();

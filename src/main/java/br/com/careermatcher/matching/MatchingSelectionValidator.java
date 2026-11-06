@@ -17,10 +17,14 @@ import java.util.*;
 /** Resolves authoritative participants from IDs after checking workspace ownership. */
 @Component
 public class MatchingSelectionValidator {
-    public record SelectedIds(List<Long> candidateIds, List<Long> vacancyIds) {
+    public record SelectedIds(List<Long> candidateIds, List<Long> vacancyIds, boolean allCandidates, List<Long> excludedCandidateIds) {
         public SelectedIds {
             candidateIds = List.copyOf(candidateIds);
             vacancyIds = List.copyOf(vacancyIds);
+            excludedCandidateIds = List.copyOf(excludedCandidateIds);
+        }
+        public SelectedIds(List<Long> candidateIds,List<Long> vacancyIds) {
+            this(candidateIds,vacancyIds,false,List.of());
         }
     }
     public record Selection(List<CrudDtos.CandidateView> candidates, List<CrudDtos.VacancyView> vacancies) {}
@@ -45,11 +49,20 @@ public class MatchingSelectionValidator {
         actor.requireStaff();
         if (!(body instanceof ObjectNode object)) throw error("body", "Objeto JSON obrigatório.");
         object.fieldNames().forEachRemaining(field -> {
-            if (!field.equals("candidateIds") && !field.equals("vacancyIds")) throw error(field, "Campo desconhecido.");
+            if (!Set.of("candidateIds","vacancyIds","allCandidates","excludedCandidateIds").contains(field))
+                throw error(field, "Campo desconhecido.");
         });
-        var candidateIds = ids(object.get("candidateIds"), "candidateIds");
-        var vacancyIds = ids(object.get("vacancyIds"), "vacancyIds");
-        return new SelectedIds(candidateIds, vacancyIds);
+        if (object.has("allCandidates") && !object.get("allCandidates").isBoolean()) throw error("allCandidates","Informe true ou false.");
+        boolean all=object.path("allCandidates").asBoolean(false);
+        var vacancyIds=ids(object.get("vacancyIds"),"vacancyIds");
+        var excluded=object.has("excludedCandidateIds")?ids(object.get("excludedCandidateIds"),"excludedCandidateIds",true):List.<Long>of();
+        if (all) {
+            if (object.has("candidateIds") && (!object.get("candidateIds").isArray() || !object.get("candidateIds").isEmpty()))
+                throw error("candidateIds","Não combine IDs individuais com a seleção de todos os candidatos.");
+            return new SelectedIds(List.of(),vacancyIds,true,excluded);
+        }
+        if (!excluded.isEmpty()) throw error("excludedCandidateIds","Exclusões exigem a seleção de todos os candidatos.");
+        return new SelectedIds(ids(object.get("candidateIds"),"candidateIds"),vacancyIds,false,List.of());
     }
 
     @Transactional(readOnly = true)
@@ -58,13 +71,20 @@ public class MatchingSelectionValidator {
         // Complete authorization before ranking or writing an execution object.
         var vacancies = repository.findByIds(Kind.VACANCY, ids.vacancyIds(), batchSize).stream().map(node -> mapper.convertValue(node,
                 CrudDtos.VacancyView.class)).toList();
-        var candidates = repository.findByIds(Kind.CANDIDATE, ids.candidateIds(), batchSize).stream().map(node -> mapper.convertValue(node,
+        List<Long> candidateIds=ids.candidateIds();
+        if (ids.allCandidates()) {
+            var excluded=new HashSet<>(ids.excludedCandidateIds());
+            candidateIds=repository.talentPoolIds().stream().filter(id->!excluded.contains(id)).toList();
+        }
+        if (candidateIds.isEmpty()) throw error("candidateIds","Nenhum candidato disponível no Banco de Talentos para esta seleção.");
+        var candidates = repository.findTalentPoolByIds(candidateIds, batchSize).stream().map(node -> mapper.convertValue(node,
                 CrudDtos.CandidateView.class)).toList();
         return new Selection(candidates, vacancies);
     }
 
-    private List<Long> ids(JsonNode values, String field) {
-        if (values == null || !values.isArray() || values.isEmpty()) throw error(field, "Selecione ao menos um participante.");
+    private List<Long> ids(JsonNode values, String field) { return ids(values,field,false); }
+    private List<Long> ids(JsonNode values, String field,boolean allowEmpty) {
+        if (values == null || !values.isArray() || !allowEmpty && values.isEmpty()) throw error(field, "Selecione ao menos um participante.");
         var result = new ArrayList<Long>();
         var seen = new HashSet<Long>();
         for (int index = 0; index < values.size(); index++) {

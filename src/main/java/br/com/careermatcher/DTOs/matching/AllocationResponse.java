@@ -70,8 +70,17 @@ public record AllocationResponse(
             String description,
             Integer durationMonths,
             SENIORITY seniority,
-            List<WeightedSkill> skills
+            List<WeightedSkill> skills,
+            @JsonFormat(shape = JsonFormat.Shape.STRING) java.time.LocalDate startDate,
+            @JsonFormat(shape = JsonFormat.Shape.STRING) java.time.LocalDate endDate,
+            Boolean currentJob,
+            Boolean confirmed
     ) {
+        public ExperienceDetails { confirmed = Boolean.TRUE.equals(confirmed); }
+        public ExperienceDetails(String id, String role, String companyName, String description,
+                                 Integer durationMonths, SENIORITY seniority, List<WeightedSkill> skills) {
+            this(id, role, companyName, description, durationMonths, seniority, skills, null, null, null, false);
+        }
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
